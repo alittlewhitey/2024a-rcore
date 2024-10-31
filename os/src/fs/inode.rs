@@ -130,7 +130,9 @@ pub fn open_file(name: &str, flags: OpenFlags) -> Option<Arc<OSInode>> {
 }
 
 impl File for OSInode {
-   
+   fn clear(&self) {
+       self.inner.exclusive_access().inode.clear();
+   }
     fn readable(&self) -> bool {
         self.readable
     }

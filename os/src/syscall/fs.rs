@@ -226,8 +226,12 @@ pub fn sys_unlinkat(_name: *const u8) -> isize {
          unsafe { UMAP2.remove(&name) };
          if unsafe { ITOS.contains_key(&op) }{
             unsafe {
-               ITOS.get_mut(&op).unwrap().link-=1;
+               let c=ITOS.get_mut(&op).unwrap();
                //println!("suc1");
+               if c.link>0{
+          
+                c.link-=1;
+               }
             }
         }    
     
@@ -241,6 +245,14 @@ pub fn sys_unlinkat(_name: *const u8) -> isize {
           
             c.link-=1;
            }
+           else{
+             let fd=unsafe { UMAP1.get(&name).unwrap() };
+             let bind=current_task().unwrap();
+             let inner=bind.inner_exclusive_access().fd_table[*fd].clone().unwrap();
+             inner.clear();
+
+           }
+          
            
                
     }
