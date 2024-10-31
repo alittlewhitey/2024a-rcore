@@ -4,6 +4,7 @@
 //!
 //! `UPSafeCell<OSInodeInner>` -> `OSInode`: for static `ROOT_INODE`,we
 //! need to wrap `OSInodeInner` into `UPSafeCell`
+
 use super::File;
 use crate::drivers::BLOCK_DEVICE;
 use crate::mm::UserBuffer;
@@ -13,19 +14,21 @@ use alloc::vec::Vec;
 use bitflags::*;
 use easy_fs::{EasyFileSystem, Inode};
 use lazy_static::*;
-
 /// inode in memory
 /// A wrapper around a filesystem inode
 /// to implement File trait atop
+
 pub struct OSInode {
     readable: bool,
     writable: bool,
     inner: UPSafeCell<OSInodeInner>,
+    
 }
 /// The OS inode inner in 'UPSafeCell'
 pub struct OSInodeInner {
     offset: usize,
     inode: Arc<Inode>,
+    
 }
 
 impl OSInode {
@@ -35,6 +38,7 @@ impl OSInode {
             readable,
             writable,
             inner: unsafe { UPSafeCell::new(OSInodeInner { offset: 0, inode }) },
+           
         }
     }
     /// read all data from the inode
@@ -59,6 +63,7 @@ lazy_static! {
         let efs = EasyFileSystem::open(BLOCK_DEVICE.clone());
         Arc::new(EasyFileSystem::root_inode(&efs))
     };
+    
 }
 
 /// List all apps in the root directory
@@ -125,12 +130,14 @@ pub fn open_file(name: &str, flags: OpenFlags) -> Option<Arc<OSInode>> {
 }
 
 impl File for OSInode {
+   
     fn readable(&self) -> bool {
         self.readable
     }
     fn writable(&self) -> bool {
         self.writable
     }
+    
     fn read(&self, mut buf: UserBuffer) -> usize {
         let mut inner = self.inner.exclusive_access();
         let mut total_read_size = 0usize;

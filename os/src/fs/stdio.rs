@@ -39,6 +39,7 @@ impl File for Stdin {
     fn write(&self, _user_buf: UserBuffer) -> usize {
         panic!("Cannot write to stdin!");
     }
+    
 }
 
 impl File for Stdout {
