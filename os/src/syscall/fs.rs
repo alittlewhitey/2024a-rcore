@@ -232,6 +232,12 @@ pub fn sys_unlinkat(_name: *const u8) -> isize {
           
                 c.link-=1;
                }
+               else {
+                let fd= UMAP1.get(&op).unwrap() ;
+             let bind=current_task().unwrap();
+             let inner=bind.inner_exclusive_access().fd_table[*fd].clone().unwrap();
+             inner.clear();
+               }
             }
         }    
     
