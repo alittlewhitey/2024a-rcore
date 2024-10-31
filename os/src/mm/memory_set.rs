@@ -43,6 +43,63 @@ pub struct MemorySet {
 }
 
 impl MemorySet {
+    ///s
+    pub fn unmap_peek(
+        &mut self,
+        start_va: VirtAddr,
+        end_va: VirtAddr,
+    )->bool{
+
+        let var=VPNRange::new(start_va.floor(),end_va.ceil());
+        
+        for vpn in var{
+            let pte=self.page_table.find_pte(vpn);
+         match pte{
+            Some(p)=>{
+                if !p.is_valid(){
+                    return true
+                }
+
+            }
+            None=>{
+                return true
+            }
+         }
+        }
+
+        for area in &mut self.areas{
+            if area.vpn_range.get_start()==start_va.floor(){
+                (*area).unmap(&mut self.page_table);
+                break;
+            }
+
+        }
+        false
+    }
+    ///s
+    pub fn insert_framed_area_peek(
+        &mut self,
+        start_va: VirtAddr,
+        end_va: VirtAddr,
+        permission: MapPermission,
+    )->bool{
+
+        let var=VPNRange::new(start_va.floor(),end_va.ceil());
+        
+        for vpn in var{
+            let pte=self.page_table.find_pte(vpn);
+         
+                if let Some(a)= pte{
+                    if  a.is_valid() {
+                        return true;
+                    }
+               
+                
+            }
+        }
+        self.insert_framed_area(start_va, end_va, permission);
+        false
+    }
     /// Create a new empty `MemorySet`.
     pub fn new_bare() -> Self {
         Self {
