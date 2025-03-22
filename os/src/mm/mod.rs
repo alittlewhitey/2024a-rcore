@@ -22,9 +22,10 @@ pub use page_table::{
     translated_byte_buffer, translated_ref, translated_refmut, translated_str, PageTable,
     PageTableEntry, UserBuffer, UserBufferIterator,
 };
-
 /// initiate heap allocator, frame allocator and kernel space
 pub fn init() {
+   print!("232"); 
+   
     heap_allocator::init_heap();
     frame_allocator::init_frame_allocator();
     KERNEL_SPACE.exclusive_access().activate();

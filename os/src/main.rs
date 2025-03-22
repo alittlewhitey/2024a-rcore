@@ -47,7 +47,8 @@ pub mod task;
 pub mod timer;
 pub mod trap;
 
-use core::arch::global_asm;
+use core::arch::{asm, global_asm};
+use config::{KERNEL_DIRECT_OFFSET, PAGE_SIZE_BITS};
 
 global_asm!(include_str!("entry.asm"));
 /// clear BSS segment
@@ -63,11 +64,24 @@ fn clear_bss() {
 }
 
 #[no_mangle]
+///立即数高于12位用rust处理
+pub fn setbootsp() {
+println!("setbootsp");
+    unsafe {
+        asm!("add sp, sp, {}", in(reg) KERNEL_DIRECT_OFFSET << PAGE_SIZE_BITS);
+        asm!("la t0, rust_main");
+        asm!("add t0, t0, {}", in(reg) KERNEL_DIRECT_OFFSET << PAGE_SIZE_BITS);
+        asm!("jalr zero, 0(t0)");
+    }
+}
+
+#[no_mangle]
 /// the rust entry-point of os
 pub fn rust_main() -> ! {
     clear_bss();
     println!("[kernel] Hello, world!");
     logging::init();
+    print!("e");
     mm::init();
     mm::remap_test();
     trap::init();
