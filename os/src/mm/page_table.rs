@@ -1,10 +1,10 @@
 //! Implementation of [`PageTableEntry`] and [`PageTable`].
-use super::{frame_alloc, FrameTracker, PhysAddr, PhysPageNum, StepByOne, VirtAddr, VirtPageNum};
+use super::{frame_alloc, FrameTracker, PhysAddr, PhysPageNum, StepByOne, VirtAddr, VirtPageNum,memory_set::KERNEL_SPACE};
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use bitflags::*;
-
+use crate::config::KERNEL_DIRECT_OFFSET;
 bitflags! {
     /// page table entry flags
     pub struct PTEFlags: u8 {
@@ -66,15 +66,39 @@ impl PageTableEntry {
 
 /// page table structure
 pub struct PageTable {
+
     root_ppn: PhysPageNum,
     frames: Vec<FrameTracker>,
 }
 
 /// Assume that it won't oom when creating/mapping.
 impl PageTable {
+    ///Create new PageTable from global kernel space
+    pub fn new_from_kernel() -> Self {
+        let frame = frame_alloc().unwrap();
+        let global_root_ppn = KERNEL_SPACE.exclusive_access().page_table.root_ppn ;
+
+        // Map kernel space
+        // Note that we just need shallow copy here
+        let kernel_start_vpn = VirtPageNum::from(KERNEL_DIRECT_OFFSET);
+        let level_1_index = kernel_start_vpn.indexes()[0];
+        debug!(
+            "[PageTable::from_global] kernel start vpn level 1 index {:#x}, start vpn {:#x}",
+            level_1_index, kernel_start_vpn.0
+        );
+        frame.ppn.get_pte_array()[level_1_index..]
+            .copy_from_slice(&&global_root_ppn.get_pte_array()[level_1_index..]);
+
+        // the new pagetable only owns the ownership of its own root ppn
+        PageTable {
+            root_ppn: frame.ppn,
+            frames: vec![frame],
+        }
+    }
     /// Create a new page table
     pub fn new() -> Self {
         let frame = frame_alloc().unwrap();
+        debug!("frame: {:#x}",frame.ppn.0);
         PageTable {
             root_ppn: frame.ppn,
             frames: vec![frame],

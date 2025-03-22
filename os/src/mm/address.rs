@@ -1,16 +1,22 @@
 //! Implementation of physical and virtual address and page number.
-use super::PageTableEntry;
-use crate::config::{PAGE_SIZE, PAGE_SIZE_BITS};
+//use alloc::fmt::format;
+
+use super:: PageTableEntry;
+use crate::config::{PAGE_SIZE, PAGE_SIZE_BITS,KERNEL_DIRECT_OFFSET};
 use core::fmt::{self, Debug, Formatter};
 
 const PA_WIDTH_SV39: usize = 56;
 const VA_WIDTH_SV39: usize = 39;
 const PPN_WIDTH_SV39: usize = PA_WIDTH_SV39 - PAGE_SIZE_BITS;
 const VPN_WIDTH_SV39: usize = VA_WIDTH_SV39 - PAGE_SIZE_BITS;
-
 /// Definitions
 #[repr(C)]
+#[derive(Copy,Clone,Ord,PartialOrd,Eq,PartialEq)]
+///Kernel Address
+pub struct KernelAddr(pub usize);
+#[repr(C)]
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq)]
+///Phys Address
 pub struct PhysAddr(pub usize);
 
 /// Virtual Address
@@ -52,10 +58,43 @@ impl Debug for PhysPageNum {
         f.write_fmt(format_args!("PPN:{:#x}", self.0))
     }
 }
-
+impl Debug for KernelAddr{
+    fn fmt(&self,f:&mut Formatter<'_>)->fmt::Result{
+        f.write_fmt(format_args!("KA:{:#x}",self.0))
+    }
+}
 /// T: {PhysAddr, VirtAddr, PhysPageNum, VirtPageNum}
 /// T -> usize: T.0
 /// usize -> T: usize.into()
+impl From <usize> for KernelAddr{
+    fn from(v: usize) -> Self {
+        Self(v & ((1 << PA_WIDTH_SV39) - 1))
+    }
+    
+}
+impl From<KernelAddr> for PhysPageNum {
+    fn from(ka: KernelAddr) -> Self {
+        let pa = PhysAddr::from(ka);
+        pa.floor()
+    }
+}
+impl From<PhysAddr> for KernelAddr {
+    fn from(pa: PhysAddr) -> Self {
+        Self(pa.0 + (KERNEL_DIRECT_OFFSET << PAGE_SIZE_BITS))
+    }
+}
+
+impl From<KernelAddr> for PhysAddr {
+    fn from(ka: KernelAddr) -> Self {
+        Self(ka.0 - (KERNEL_DIRECT_OFFSET << PAGE_SIZE_BITS))
+    }
+}
+
+impl From<KernelAddr> for VirtAddr {
+    fn from(ka: KernelAddr) -> Self {
+        Self(ka.0)
+    }
+}
 
 impl From<usize> for PhysAddr {
     fn from(v: usize) -> Self {
@@ -74,7 +113,14 @@ impl From<usize> for VirtAddr {
 }
 impl From<usize> for VirtPageNum {
     fn from(v: usize) -> Self {
+        if v==KERNEL_DIRECT_OFFSET
+        {
+         Self(v)   
+        }
+        else
+       { 
         Self(v & ((1 << VPN_WIDTH_SV39) - 1))
+       }
     }
 }
 impl From<PhysAddr> for usize {
@@ -99,6 +145,19 @@ impl From<VirtAddr> for usize {
 impl From<VirtPageNum> for usize {
     fn from(v: VirtPageNum) -> Self {
         v.0
+    }
+}
+///kernel address impl
+impl KernelAddr {
+    ///Get mutable reference to `PhysAddr` value
+    pub fn reinterpret<T>(&self) -> &'static T {
+        // 将`self.0`转换为`*mut T`类型，然后使用`as_ref()`方法获取`&T`类型的可变引用
+        unsafe { (self.0 as *mut T).as_ref().unwrap() }
+    }
+    ///Get mutable reference to `PhysAddr` value
+    pub fn reinterpret_mut<T>(&self) -> &'static mut T {
+        // 将`self.0`转换为`*mut T`类型，然后使用`as_mut()`方法获取`&mut T`类型的可变引用
+        unsafe { (self.0 as *mut T).as_mut().unwrap() }
     }
 }
 /// virtual address impl
