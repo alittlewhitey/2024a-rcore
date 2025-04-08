@@ -13,18 +13,21 @@
 //! to [`syscall()`].
 
 mod context;
-
-use crate::config:: TRAP_CONTEXT_BASE;
+// use crate::mm::activate_kernel_space;
+//use crate::config:: TRAP_CONTEXT_BASE;
 use crate::syscall::syscall;
 use crate::task::{
-    current_trap_cx, current_user_token, exit_current_and_run_next, suspend_current_and_run_next,
+    current_trap_cx,exit_current_and_run_next, suspend_current_and_run_next,
 };
+use crate::utils::backtrace;
 use crate::timer::set_next_trigger;
-use core::arch::{asm, global_asm};
+use core::arch:: global_asm;
+use riscv::register::{satp, sepc, sstatus};
 use riscv::register::{
     mtvec::TrapMode,
     scause::{self, Exception, Interrupt, Trap},
     sie, stval, stvec,
+    mstatus::FS,
 };
 
 global_asm!(include_str!("trap.S"));
@@ -32,18 +35,27 @@ global_asm!(include_str!("trap.S"));
 /// Initialize trap handling
 pub fn init() {
     set_kernel_trap_entry();
+    unsafe {
+        sstatus::set_fs(FS::Clean);
+    }
 }
-
+extern "C" {
+    fn __trap_from_user();
+}
 fn set_kernel_trap_entry() {
     unsafe {
         stvec::write(trap_from_kernel as usize, TrapMode::Direct);
     }
+
+        trace!("stvec_kernel:{:#x},true adress :{:#x}",stvec::read().bits(),trap_from_kernel as usize);
 }
 
 fn set_user_trap_entry() {
     unsafe {
-        stvec::write(trap_handler as usize, TrapMode::Direct);
+        stvec::write(__trap_from_user as usize, TrapMode::Direct);
     }
+
+        trace!("stvec_user:{:#x},true adress :{:#x}",stvec::read().bits(),__trap_from_user as usize);
 }
 
 /// enable timer interrupt in supervisor mode
@@ -55,11 +67,20 @@ pub fn enable_timer_interrupt() {
 
 /// trap handler
 #[no_mangle]
-pub fn trap_handler() -> ! {
+pub fn trap_handler() {
     set_kernel_trap_entry();
+    trace!("trap_handler");
+
     let scause = scause::read();
     let stval = stval::read();
-    // trace!("into {:?}", scause.cause());
+    let sepc = sepc::read();
+    trace!(
+        "Trap: cause={:?}, addr={:#x}, sepc={:#x}, satp={:#x}",
+        scause.cause(),
+        stval,
+        sepc,
+        satp::read().bits()
+    );
     match scause.cause() {
         Trap::Exception(Exception::UserEnvCall) => {
             // jump to next instruction anyway
@@ -77,14 +98,19 @@ pub fn trap_handler() -> ! {
         | Trap::Exception(Exception::InstructionPageFault)
         | Trap::Exception(Exception::LoadFault)
         | Trap::Exception(Exception::LoadPageFault) => {
+            
             println!(
                 "[kernel] trap_handler:  {:?} in application, bad addr = {:#x}, bad instruction = {:#x}, kernel killed it.",
                 scause.cause(),
                 stval,
                 current_trap_cx().sepc,
             );
+            loop {
+               
+            }
             // page fault exit code
-            exit_current_and_run_next(-2);
+
+            // exit_current_and_run_next(-2);
         }
         Trap::Exception(Exception::IllegalInstruction) => {
             println!("[kernel] IllegalInstruction in application, kernel killed it.");
@@ -103,34 +129,48 @@ pub fn trap_handler() -> ! {
             );
         }
     }
-    //println!("before trap_return");
-    trap_return();
+    
 }
-
+///方便调试
+#[no_mangle]
+pub fn trap_loop() {
+    loop {
+        trap_return();
+        trap_handler();
+    }
+}
 #[no_mangle]
 /// return to user space
-/// set the new addr of __restore asm function in TRAMPOLINE page,
-/// set the reg a0 = trap_cx_ptr, reg a1 = phy addr of usr page table,
-/// finally, jump to new addr of __restore asm function
-pub fn trap_return() -> ! {
+
+pub fn trap_return()   {
+    // set_user_trap_entry();
+    // let trap_cx_ptr = TRAP_CONTEXT_BASE;
+    // let user_satp = current_user_token();
+    // extern "C" {
+    //     fn __alltraps();
+    //     fn __restore();
+    // }
+    // let restore_va = __restore as usize - __alltraps as usize ;
+    // // trace!("[kernel] trap_return: ..before return");
+    // unsafe {
+    //     asm!(
+    //         "fence.i",
+    //         "jr {restore_va}",
+    //         restore_va = in(reg) restore_va,
+    //         in("a0") trap_cx_ptr,
+    //         in("a1") user_satp,
+    //         options(noreturn)
+    //     );
+    // }
     set_user_trap_entry();
-    let trap_cx_ptr = TRAP_CONTEXT_BASE;
-    let user_satp = current_user_token();
     extern "C" {
-        fn __alltraps();
-        fn __restore();
+        #[allow(improper_ctypes)]
+        fn __return_to_user(cx: *mut TrapContext);
     }
-    let restore_va = __restore as usize - __alltraps as usize ;
-    // trace!("[kernel] trap_return: ..before return");
     unsafe {
-        asm!(
-            "fence.i",
-            "jr {restore_va}",
-            restore_va = in(reg) restore_va,
-            in("a0") trap_cx_ptr,
-            in("a1") user_satp,
-            options(noreturn)
-        );
+        // 方便调试进入__return_to_user
+        let trap_cx = current_trap_cx();
+        __return_to_user(trap_cx);
     }
 }
 
@@ -138,10 +178,23 @@ pub fn trap_return() -> ! {
 /// handle trap from kernel
 /// Unimplement: traps/interrupts/exceptions from kernel mode
 /// Todo: Chapter 9: I/O device
+#[link_section = ".text.trap_entries"]
+
 pub fn trap_from_kernel() -> ! {
-    use riscv::register::sepc;
-    trace!("stval = {:#x}, sepc = {:#x}", stval::read(), sepc::read());
-    panic!("a trap {:?} from kernel!", scause::read().cause());
+    backtrace();
+    let stval = stval::read();
+    let sepc = sepc::read();
+    // let stval_vpn = VirtPageNum::from(stval);
+    // let sepc_vpn = VirtPageNum::from(sepc);
+    panic!(
+        "stval = {:#x}, sepc = {:#x},
+        a trap {:?} from kernel",
+        stval,
+        
+        sepc,
+        
+        scause::read().cause()
+    );
 }
 
 pub use context::TrapContext;

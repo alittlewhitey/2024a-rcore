@@ -1,7 +1,8 @@
 //! Implementation of [`FrameAllocator`] which
 //! controls all the frames in the operating system.
 use super::{PhysAddr, PhysPageNum};
-use crate::config::MEMORY_END;
+use crate::config::{self,  MEMORY_END};
+use crate::mm::address::KernelAddr;
 use crate::sync::UPSafeCell;
 use alloc::vec::Vec;
 use core::fmt::{self, Debug, Formatter};
@@ -18,8 +19,10 @@ impl FrameTracker {
     pub fn new(ppn: PhysPageNum) -> Self {
         // page cleaning
         let bytes_array = ppn.get_bytes_array();
+        
         for i in bytes_array {
             *i = 0;
+
         }
         Self { ppn }
     }
@@ -53,6 +56,12 @@ impl StackFrameAllocator {
     pub fn init(&mut self, l: PhysPageNum, r: PhysPageNum) {
         self.current = l.0;
         self.end = r.0;
+        println!(
+            "start frame={:#x},end frame={:#x},last {:#x} Physical Frames.",
+            self.current,
+            self.end,
+            self.end - self.current
+        );
         // trace!("last {} Physical Frames.", self.end - self.current);
     }
 }
@@ -97,10 +106,13 @@ pub fn init_frame_allocator() {
     extern "C" {
         fn ekernel();
     }
+    println!("ekernel :{:#x}",ekernel as usize);
     FRAME_ALLOCATOR.exclusive_access().init(
-        PhysAddr::from(ekernel as usize).ceil(),
-        PhysAddr::from(MEMORY_END).floor(),
+        PhysAddr::from(KernelAddr::from(ekernel as usize)).ceil(),
+        PhysAddr::from(KernelAddr::from(MEMORY_END)).floor(),
+        
     );
+    println!("l:{:#x}",ekernel as usize - config::KERNEL_DIRECT_OFFSET);
 }
 
 /// Allocate a physical page frame in FrameTracker style

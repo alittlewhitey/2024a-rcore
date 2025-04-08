@@ -32,13 +32,10 @@ impl Log for SimpleLogger {
 
 /// initiate logger
 pub fn init() {
-    print!("12");
     static LOGGER: SimpleLogger = SimpleLogger;
 
-    print!("12");
     log::set_logger(&LOGGER).unwrap();
 
-    print!("12");
     log::set_max_level(match option_env!("LOG") {
         Some("ERROR") => LevelFilter::Error,
         Some("WARN") => LevelFilter::Warn,

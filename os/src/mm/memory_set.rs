@@ -1,11 +1,11 @@
 //! Implementation of [`MapArea`] and [`MemorySet`].
 
-use crate::config::KERNEL_DIRECT_OFFSET;
+use crate::config::{ KERNEL_DIRECT_OFFSET, KERNEL_PGNUM_OFFSET};
 use super::{frame_alloc, FrameTracker};
 use super::{PTEFlags, PageTable, PageTableEntry};
 use super::{/*PhysAddr,*/ PhysPageNum, VirtAddr, VirtPageNum};
 use super::{StepByOne, VPNRange};
-use crate::config::{MEMORY_END, MMIO, PAGE_SIZE,/*  TRAMPOLINE, TRAP_CONTEXT_BASE,*/ USER_STACK_SIZE};
+use crate::config::{MEMORY_END, MMIO, PAGE_SIZE,/*  TRAMPOLINE, TRAP_CONTEXT_BASE,*/};
 use crate::sync::UPSafeCell;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
@@ -33,6 +33,26 @@ lazy_static! {
         Arc::new(unsafe { UPSafeCell::new(MemorySet::new_kernel()) });
 }
 
+/// Map area type
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MapAreaType {
+    /// Segments from elf file, e.g. text, rodata, data, bss
+    Elf,
+    /// Stack
+    Stack,
+    /// Brk
+    Brk,
+    /// Mmap
+    Mmap,
+    /// For Trap Context
+    Trap,
+    /// Shared memory
+    Shm,
+    /// Physical frames(for kernel)
+    Physical,
+    /// MMIO(for kernel)
+    MMIO,
+}
 /// the kernel token
 pub fn kernel_token() -> usize {
     KERNEL_SPACE.exclusive_access().token()
@@ -42,8 +62,8 @@ pub fn kernel_token() -> usize {
 pub struct MemorySet {
     ///根页表位置
     pub page_table: PageTable,
-    //memoryset的区域
-    areas: Vec<MapArea>,
+    ///memoryset的区域
+    pub areas: Vec<MapArea>,
 }
 
 impl MemorySet {
@@ -81,8 +101,24 @@ impl MemorySet {
         }
         false
     }
+    /// 复制逻辑段内容
+    pub fn clone_area(&mut self, start_vpn: VirtPageNum, another: &MemorySet) {
+        if let Some(area) = another
+            .areas
+            .iter()
+            .find(|area| area.vpn_range.get_start() == start_vpn)
+        {
+            for vpn in area.vpn_range {
+                let src_ppn = another.translate(vpn).unwrap().ppn();
+                let dst_ppn = self.translate(vpn).unwrap().ppn();
+                dst_ppn
+                    .get_bytes_array()
+                    .copy_from_slice(src_ppn.get_bytes_array());
+            }
+        }
+    }
     ///s
-    pub fn insert_framed_area_peek(
+    pub fn insert_framed_area_peek_for_mmap(
         &mut self,
         start_va: VirtAddr,
         end_va: VirtAddr,
@@ -102,7 +138,7 @@ impl MemorySet {
                 
             }
         }
-        self.insert_framed_area(start_va, end_va, permission);
+        self.insert_framed_area(start_va, end_va, permission, MapAreaType::Mmap);
         false
     }
 ///Create a new `MemorySet` from global kernel space
@@ -129,10 +165,12 @@ impl MemorySet {
         start_va: VirtAddr,
         end_va: VirtAddr,
         permission: MapPermission,
+        area_type: MapAreaType,
     ) {
         self.push(
-            MapArea::new(start_va, end_va, MapType::Framed, permission),
+            MapArea::new(start_va, end_va, MapType::Framed, permission, area_type),
             None,
+
         );
     }
     /// remove a area
@@ -157,6 +195,19 @@ impl MemorySet {
         }
         self.areas.push(map_area);
     }
+    ///通过递归调整提示地址，从高到低寻找足够大的未占用虚拟地址空间，确保新分配区域不与现有区域重叠。
+    pub fn find_insert_addr(&self, hint: usize, size: usize) -> usize {
+        let end_vpn = VirtAddr::from(hint).floor();
+        let start_vpn = VirtAddr::from(hint - size).floor();
+        for area in self.areas.iter() {
+            let (start, end) = area.vpn_range.range();
+            if end_vpn > start && start_vpn < end {
+                let new_hint = VirtAddr::from(start_vpn).0 - PAGE_SIZE;
+                return self.find_insert_addr(new_hint, size);
+            }
+        }
+        VirtAddr::from(start_vpn).0
+    }
     /// Mention that trampoline is not collected by areas.
     // fn map_trampoline(&mut self) {
     //     self.page_table.map(
@@ -171,6 +222,7 @@ impl MemorySet {
         // map trampoline
         // memory_set.map_trampoline();
         // map kernel sections
+        info!("kernel  token: {:#x}",memory_set.token());
         info!(".text [{:#x}, {:#x})", stext as usize, etext as usize);
         info!(".rodata [{:#x}, {:#x})", srodata as usize, erodata as usize);
         info!(".data [{:#x}, {:#x})", sdata as usize, edata as usize);
@@ -185,6 +237,7 @@ impl MemorySet {
                 (etext as usize).into(),
                 MapType::Direct,
                 MapPermission::R | MapPermission::X,
+                MapAreaType::Elf,
             ),
             None,
         );
@@ -195,6 +248,8 @@ impl MemorySet {
                 (erodata as usize).into(),
                 MapType::Direct,
                 MapPermission::R,
+
+                MapAreaType::Elf,
             ),
             None,
         );
@@ -205,6 +260,8 @@ impl MemorySet {
                 (edata as usize).into(),
                 MapType::Direct,
                 MapPermission::R | MapPermission::W,
+                
+                MapAreaType::Elf,
             ),
             None,
         );
@@ -215,6 +272,7 @@ impl MemorySet {
                 (ebss as usize).into(),
                 MapType::Direct,
                 MapPermission::R | MapPermission::W,
+                MapAreaType::Elf,
             ),
             None,
         );
@@ -225,17 +283,21 @@ impl MemorySet {
                 MEMORY_END.into(),
                 MapType::Direct,
                 MapPermission::R | MapPermission::W,
+                MapAreaType::Physical,
             ),
             None,
         );
         info!("mapping memory-mapped registers");
+      
         for pair in MMIO {
+  debug!("MMio:{:#x},{:#x}",(*pair).0+KERNEL_DIRECT_OFFSET,(*pair).1+(*pair).0+KERNEL_DIRECT_OFFSET   );
             memory_set.push(
                 MapArea::new(
-                    (*pair).0.into(),
-                    ((*pair).0 + (*pair).1).into(),
+                    ((*pair).0+KERNEL_DIRECT_OFFSET).into(),
+                    ((*pair).0 + (*pair).1+KERNEL_DIRECT_OFFSET).into(),
                     MapType::Direct,
                     MapPermission::R | MapPermission::W,
+                    MapAreaType::MMIO,
                 ),
                 None,
             );
@@ -245,7 +307,7 @@ impl MemorySet {
     /// Include sections in elf and trampoline and TrapContext and user stack,
     /// also returns user_sp_base and entry point.
     pub fn from_elf(elf_data: &[u8]) -> (Self, usize, usize) {
-        let mut memory_set = Self::new_bare();
+        let mut memory_set = Self::new_from_kernel();
         // map trampoline
         // memory_set.map_trampoline();
         // map program headers of elf, with U flag
@@ -271,8 +333,11 @@ impl MemorySet {
                 if ph_flags.is_execute() {
                     map_perm |= MapPermission::X;
                 }
-                let map_area = MapArea::new(start_va, end_va, MapType::Framed, map_perm);
+
+                trace!("start_va::{:#x}, end_va::{:#x}",start_va.0,end_va.0);
+                let map_area = MapArea::new(start_va, end_va, MapType::Framed, map_perm,MapAreaType::Elf);
                 max_end_vpn = map_area.vpn_range.get_end();
+                
                 memory_set.push(
                     map_area,
                     Some(&elf.input[ph.offset() as usize..(ph.offset() + ph.file_size()) as usize]),
@@ -284,36 +349,28 @@ impl MemorySet {
         let mut user_stack_bottom: usize = max_end_va.into();
         // guard page
         user_stack_bottom += PAGE_SIZE;
-        let user_stack_top = user_stack_bottom + USER_STACK_SIZE;
+        let user_stack_top = user_stack_bottom ;
+
+    // used in sbrk
         memory_set.push(
             MapArea::new(
                 user_stack_bottom.into(),
                 user_stack_top.into(),
                 MapType::Framed,
                 MapPermission::R | MapPermission::W | MapPermission::U,
+                MapAreaType::Brk,
             ),
             None,
         );
-        // used in sbrk
-        memory_set.push(
-            MapArea::new(
-                user_stack_top.into(),
-                user_stack_top.into(),
-                MapType::Framed,
-                MapPermission::R | MapPermission::W | MapPermission::U,
-            ),
-            None,
-        );
-        // // map TrapContext
-        // memory_set.push(
-        //     MapArea::new(
-        //         TRAP_CONTEXT_BASE.into(),
-        //         TRAMPOLINE.into(),
-        //         MapType::Framed,
-        //         MapPermission::R | MapPermission::W,
-        //     ),
-        //     None,
-        // );
+       
+    
+
+                trace!("sp,start_va::{:#x}, sp,end_va::{:#x}",user_stack_bottom,user_stack_top);
+  
+ 
+
+       
+        trace!("from_elf push ok");
         (
             memory_set,
             user_stack_top,
@@ -322,15 +379,16 @@ impl MemorySet {
     }
     /// Create a new address space by copy code&data from a exited process's address space.
     pub fn from_existed_user(user_space: &Self) -> Self {
-        let mut memory_set = Self::new_bare();
+        let mut memory_set = Self::new_from_kernel();
         // map trampoline
         // memory_set.map_trampoline();
         // copy data sections/trap_context/user_stack
-        for area in user_space.areas.iter() {
+        for area in user_space.areas.iter().filter(|a| a.area_type != MapAreaType::Stack&&a.area_type != MapAreaType::Trap) {
             let new_area = MapArea::from_another(area);
             memory_set.push(new_area, None);
-            // copy data from another space
-            for vpn in area.vpn_range {
+        
+            // 复制数据到新空间
+            for vpn in area.vpn_range.clone() {
                 let src_ppn = user_space.translate(vpn).unwrap().ppn();
                 let dst_ppn = memory_set.translate(vpn).unwrap().ppn();
                 dst_ppn
@@ -338,6 +396,7 @@ impl MemorySet {
                     .copy_from_slice(src_ppn.get_bytes_array());
             }
         }
+        
         memory_set
     }
     /// Change page table by writing satp CSR Register.
@@ -394,10 +453,13 @@ impl MemorySet {
 }
 /// map area structure, controls a contiguous piece of virtual memory
 pub struct MapArea {
-    vpn_range: VPNRange,
+    ///从start到end的vpn
+    pub vpn_range: VPNRange,
     data_frames: BTreeMap<VirtPageNum, FrameTracker>,
     map_type: MapType,
     map_perm: MapPermission,
+    area_type: MapAreaType,
+    
 }
 
 impl MapArea {
@@ -406,6 +468,7 @@ impl MapArea {
         end_va: VirtAddr,
         map_type: MapType,
         map_perm: MapPermission,
+        area_type: MapAreaType,
     ) -> Self {
         let start_vpn: VirtPageNum = start_va.floor();
         let end_vpn: VirtPageNum = end_va.ceil();
@@ -414,6 +477,7 @@ impl MapArea {
             data_frames: BTreeMap::new(),
             map_type,
             map_perm,
+            area_type,
         }
     }
     pub fn from_another(another: &Self) -> Self {
@@ -422,6 +486,7 @@ impl MapArea {
             data_frames: BTreeMap::new(),
             map_type: another.map_type,
             map_perm: another.map_perm,
+            area_type: another.area_type,
         }
     }
     pub fn map_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {
@@ -435,8 +500,7 @@ impl MapArea {
                 self.data_frames.insert(vpn, frame);
             }
             MapType::Direct => {
-                ppn = PhysPageNum(vpn.0 - KERNEL_DIRECT_OFFSET);
-  trace!("mapping ppn:{:#x},vpn:{:#x}",ppn.0,vpn.0);
+                ppn = PhysPageNum(vpn.0 - KERNEL_PGNUM_OFFSET);
             }
         }
         let pte_flags = PTEFlags::from_bits(self.map_perm.bits).unwrap();
@@ -520,21 +584,25 @@ bitflags! {
 /// remap test in kernel space
 #[allow(unused)]
 pub fn remap_test() {
+    
     info!("[kernel]:remap testing");
     let mut kernel_space = KERNEL_SPACE.exclusive_access();
-    let mid_text: VirtAddr = ((stext as usize + etext as usize) / 2).into();
-    let mid_rodata: VirtAddr = ((srodata as usize + erodata as usize) / 2).into();
-    let mid_data: VirtAddr = ((sdata as usize + edata as usize) / 2).into();
+    let mid_text: VirtAddr = (stext as usize + (etext as usize - stext as usize) / 2).into();
+    let mid_rodata: VirtAddr =
+        (srodata as usize + (erodata as usize - srodata as usize) / 2).into();
+    let mid_data: VirtAddr = (sdata as usize + (edata as usize - sdata as usize) / 2).into();
     assert!(!kernel_space
         .page_table
         .translate(mid_text.floor())
         .unwrap()
         .writable(),);
+    debug!("text pass");
     assert!(!kernel_space
         .page_table
         .translate(mid_rodata.floor())
         .unwrap()
         .writable(),);
+    debug!("rodata pass");
     assert!(!kernel_space
         .page_table
         .translate(mid_data.floor())
@@ -542,3 +610,4 @@ pub fn remap_test() {
         .executable(),);
     println!("remap_test passed!");
 }
+

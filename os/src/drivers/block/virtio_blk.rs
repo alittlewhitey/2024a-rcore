@@ -1,7 +1,8 @@
 use super::BlockDevice;
+use crate::config;
 use crate::mm::{
     frame_alloc, frame_dealloc, kernel_token, FrameTracker, PageTable, PhysAddr, PhysPageNum,
-    StepByOne, VirtAddr,
+    StepByOne, VirtAddr,KernelAddr
 };
 use crate::sync::UPSafeCell;
 use alloc::vec::Vec;
@@ -10,7 +11,7 @@ use virtio_drivers::{Hal, VirtIOBlk, VirtIOHeader};
 
 /// The base address of control registers in Virtio_Block device
 #[allow(unused)]
-const VIRTIO0: usize = 0x10001000;
+const VIRTIO0: usize = 0x10001000+config::KERNEL_DIRECT_OFFSET;
 /// VirtIOBlock device driver strcuture for virtio_blk device
 pub struct VirtIOBlock(UPSafeCell<VirtIOBlk<'static, VirtioHal>>);
 
@@ -37,6 +38,7 @@ impl VirtIOBlock {
     #[allow(unused)]
     /// Create a new VirtIOBlock driver with VIRTIO0 base_addr for virtio_blk device
     pub fn new() -> Self {
+        trace!("VIRTIO_BLK: init:{:#x}",VIRTIO0);
         unsafe {
             Self(UPSafeCell::new(
                 VirtIOBlk::<VirtioHal>::new(&mut *(VIRTIO0 as *mut VirtIOHeader)).unwrap(),
@@ -73,7 +75,7 @@ impl Hal for VirtioHal {
     }
 
     fn phys_to_virt(addr: usize) -> usize {
-        addr
+        KernelAddr::from(PhysAddr::from(addr)).0
     }
 
     fn virt_to_phys(vaddr: usize) -> usize {
