@@ -13,11 +13,6 @@ BOARD := qemu
 SBI ?= rustsbi
 BOOTLOADER := ../bootloader/$(SBI)-$(BOARD).bin
 
-# Building mode argument
-ifeq ($(MODE), release)
-	MODE_ARG := --release
-endif
-
 # KERNEL ENTRY
 KERNEL_ENTRY_PA := 0x80200000
 
@@ -25,17 +20,24 @@ KERNEL_ENTRY_PA := 0x80200000
 OBJDUMP := rust-objdump --arch-name=riscv64
 OBJCOPY := rust-objcopy --binary-architecture=riscv64
 
+# GDB Dashboard 支持
+GDB_PATH := /root/qemu/gdb-14.2/build-riscv64/bin/riscv64-unknown-elf-gdb
+gdb := $(GDB_PATH) 
+
+# Building mode argument
+ifeq ($(MODE), release)
+	MODE_ARG := --release
+endif
+
+# 测试参数
 CHAPTER ?= $(shell git rev-parse --abbrev-ref HEAD | sed -E 's/ch([0-9])/\1/')
-TEST ?= $(CHAPTER)
+TEST ?= 6
 BASE ?= 1
 
 # Disassembly
 DISASM ?= -x
 
-# Run usertests or usershell
-TEST ?=
-
-build: env $(KERNEL_BIN) fs-img 
+build: env $(KERNEL_BIN) fs-img
 
 env:
 ifeq ($(OFFLINE),)
@@ -69,28 +71,30 @@ disasm-vim: kernel
 	@vim $(DISASM_TMP)
 	@rm $(DISASM_TMP)
 
-run: build run-inner
+run: run-inner
 
-run-inner:
+run-inner: build
 	@qemu-system-riscv64 \
 		-machine virt \
 		-nographic \
+		-m 128M \
 		-bios $(BOOTLOADER) \
 		-device loader,file=$(KERNEL_BIN),addr=$(KERNEL_ENTRY_PA) \
 		-drive file=$(FS_IMG),if=none,format=raw,id=x0 \
-        -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0
+		-device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0
 
-debug: build
+gdb: build
 	@tmux new-session -d \
-		"qemu-system-riscv64 -machine virt -nographic -bios $(BOOTLOADER) -device loader,file=$(KERNEL_BIN),addr=$(KERNEL_ENTRY_PA) -s -S" && \
-		tmux split-window -h "riscv64-unknown-elf-gdb -ex 'file $(KERNEL_ELF)' -ex 'set arch riscv:rv64' -ex 'target remote localhost:1234'" && \
+		"qemu-system-riscv64 -machine virt -nographic -m 128M -bios $(BOOTLOADER) -device loader,file=$(KERNEL_ELF),addr=$(KERNEL_ENTRY_PA) -s -S" && \
+		tmux split-window -h \"$(gdb) -ex 'file $(KERNEL_ELF)' -ex 'set arch riscv:rv64' -ex 'target remote localhost:1234'\" && \
+		tmux swap-pane -U && \
 		tmux -2 attach-session -d
 
-
 gdbserver: build
-	@qemu-system-riscv64 -machine virt -nographic -bios $(BOOTLOADER) -device loader,file=$(KERNEL_BIN),addr=$(KERNEL_ENTRY_PA) -s -S
+	@qemu-system-riscv64 -machine virt -nographic -m 128M -bios $(BOOTLOADER) -device loader,file=$(KERNEL_ELF),addr=$(KERNEL_ENTRY_PA) -drive file=$(FS_IMG),if=none,format=raw,id=x0 \
+		-device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0 -s -S
 
 gdbclient:
-	@riscv64-unknown-elf-gdb -ex 'file $(KERNEL_ELF)' -ex 'set arch riscv:rv64' -ex 'target remote localhost:1234'
+	@$(gdb) -ex 'file $(KERNEL_ELF)' -ex 'set arch riscv:rv64' -ex 'target remote localhost:1234'
 
 .PHONY: build env kernel clean disasm disasm-vim run-inner fs-img gdbserver gdbclient

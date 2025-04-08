@@ -15,13 +15,16 @@ pub fn handle_alloc_error(layout: core::alloc::Layout) -> ! {
 static mut HEAP_SPACE: [u8; KERNEL_HEAP_SIZE] = [0; KERNEL_HEAP_SIZE];
 /// initiate heap allocator
 pub fn init_heap() {
-    unsafe {
+   unsafe { trace!("heap start:{:#x},end: {:#x}",HEAP_SPACE.as_ptr() as usize,HEAP_SPACE.as_ptr() as usize+KERNEL_HEAP_SIZE);
+   } unsafe {
         HEAP_ALLOCATOR
             .lock()
             .init(HEAP_SPACE.as_ptr() as usize, KERNEL_HEAP_SIZE);
+        
     }
 }
 
+///heaptest
 #[allow(unused)]
 pub fn heap_test() {
     use alloc::boxed::Box;

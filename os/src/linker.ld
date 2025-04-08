@@ -1,5 +1,6 @@
 OUTPUT_ARCH(riscv)
 ENTRY(_start)
+/* BASE_ADDRESS = 0x80200000; */
 BASE_ADDRESS = 0xffffffc080200000;
 
 SECTIONS
@@ -8,15 +9,18 @@ SECTIONS
     skernel = .;
 
     stext = .;
-    .text : {
-        *(.text.entry)
-        . = ALIGN(4K);
+    .text : AT(0x80200000) {
+    *(.text.entry)
+        . = ALIGN(4);           /* 强制4字节对齐 */
+        *(.text.trap_entries)   /* 存放 trap_from_kernel 和 __trap_from_user */
+    . = ALIGN(4K);
         strampoline = .;
         *(.text.trampoline);
         . = ALIGN(4K);
         *(.text .text.*)
-    }
-
+}
+    
+    
     . = ALIGN(4K);
     etext = .;
     srodata = .;

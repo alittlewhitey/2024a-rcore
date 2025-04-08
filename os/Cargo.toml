@@ -18,3 +18,8 @@ easy-fs = { path = "../easy-fs" }
 
 [profile.release]
 debug = true
+
+opt-level = 0
+[profile.dev]
+debug = true
+opt-level = 0

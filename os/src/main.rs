@@ -34,6 +34,7 @@ extern crate alloc;
 
 #[macro_use]
 mod console;
+
 pub mod config;
 pub mod drivers;
 pub mod fs;
@@ -46,9 +47,10 @@ pub mod syscall;
 pub mod task;
 pub mod timer;
 pub mod trap;
-
+///utils;
+pub mod utils;
 use core::arch::{asm, global_asm};
-use config::{KERNEL_DIRECT_OFFSET, PAGE_SIZE_BITS};
+use config::KERNEL_DIRECT_OFFSET;
 
 global_asm!(include_str!("entry.asm"));
 /// clear BSS segment
@@ -61,17 +63,19 @@ fn clear_bss() {
         core::slice::from_raw_parts_mut(sbss as usize as *mut u8, ebss as usize - sbss as usize)
             .fill(0);
     }
+
+    print!("stext:{:x}",sbss as usize);
 }
 
 #[no_mangle]
 ///立即数高于12位用rust处理
 pub fn setbootsp() {
-println!("setbootsp");
-    unsafe {
-        asm!("add sp, sp, {}", in(reg) KERNEL_DIRECT_OFFSET << PAGE_SIZE_BITS);
+   unsafe {
+        asm!("add sp, sp, {}", in(reg) KERNEL_DIRECT_OFFSET);
         asm!("la t0, rust_main");
-        asm!("add t0, t0, {}", in(reg) KERNEL_DIRECT_OFFSET << PAGE_SIZE_BITS);
+        asm!("add t0, t0, {}", in(reg) KERNEL_DIRECT_OFFSET );
         asm!("jalr zero, 0(t0)");
+       
     }
 }
 
@@ -81,12 +85,12 @@ pub fn rust_main() -> ! {
     clear_bss();
     println!("[kernel] Hello, world!");
     logging::init();
-    print!("e");
     mm::init();
     mm::remap_test();
+    mm::heap_allocator::heap_test();
     trap::init();
-    trap::enable_timer_interrupt();
-    timer::set_next_trigger();
+    // trap::enable_timer_interrupt();
+    // timer::set_next_trigger();
     fs::list_apps();
     task::add_initproc();
     task::run_tasks();

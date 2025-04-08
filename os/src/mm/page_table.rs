@@ -1,10 +1,13 @@
 //! Implementation of [`PageTableEntry`] and [`PageTable`].
+
+
+use super::KernelAddr;
 use super::{frame_alloc, FrameTracker, PhysAddr, PhysPageNum, StepByOne, VirtAddr, VirtPageNum,memory_set::KERNEL_SPACE};
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use bitflags::*;
-use crate::config::KERNEL_DIRECT_OFFSET;
+use crate::config;
 bitflags! {
     /// page table entry flags
     pub struct PTEFlags: u8 {
@@ -80,14 +83,12 @@ impl PageTable {
 
         // Map kernel space
         // Note that we just need shallow copy here
-        let kernel_start_vpn = VirtPageNum::from(KERNEL_DIRECT_OFFSET);
+        let kernel_start_vpn = VirtPageNum::from(config::KERNEL_PGNUM_OFFSET);
         let level_1_index = kernel_start_vpn.indexes()[0];
-        debug!(
-            "[PageTable::from_global] kernel start vpn level 1 index {:#x}, start vpn {:#x}",
-            level_1_index, kernel_start_vpn.0
-        );
+        
+        //截断高地址页表以访问
         frame.ppn.get_pte_array()[level_1_index..]
-            .copy_from_slice(&&global_root_ppn.get_pte_array()[level_1_index..]);
+            .copy_from_slice(&global_root_ppn.get_pte_array()[level_1_index..]);
 
         // the new pagetable only owns the ownership of its own root ppn
         PageTable {
@@ -168,6 +169,7 @@ impl PageTable {
         self.find_pte(vpn).map(|pte| *pte)
     }
     /// get the physical address from the virtual address
+    /// va to pa
     pub fn translate_va(&self, va: VirtAddr) -> Option<PhysAddr> {
         self.find_pte(va.clone().floor()).map(|pte| {
             let aligned_pa: PhysAddr = pte.ppn().into();
@@ -211,10 +213,8 @@ pub fn translated_str(token: usize, ptr: *const u8) -> String {
     let mut string = String::new();
     let mut va = ptr as usize;
     loop {
-        let ch: u8 = *(page_table
-            .translate_va(VirtAddr::from(va))
-            .unwrap()
-            .get_mut());
+        let ch: u8 =
+            *(KernelAddr::from(page_table.translate_va(VirtAddr::from(va)).unwrap()).get_mut());
         if ch == 0 {
             break;
         }
@@ -298,5 +298,29 @@ impl Iterator for UserBufferIterator {
             }
             Some(r)
         }
+    }
+}
+
+
+
+/// 从 `token` 地址空间 `ptr` 处读取数据，
+/// 其中虚拟地址 `ptr` 解析得到的物理地址可以跨页。
+///
+/// 类型 `T` 需实现 Copy trait
+pub fn _get_data<T: 'static + Copy>(token: usize, ptr: *const T) -> T {
+    let page_table = PageTable::from_token(token);
+    let mut va = VirtAddr::from(ptr as usize);
+    let pa = page_table.translate_va(va).unwrap();
+    let size = core::mem::size_of::<T>();
+    // 若数据跨页，则转换成字节数据写入
+    if (pa + size - 1).floor() != pa.floor() {
+        let mut bytes = vec![0u8; size];
+        for i in 0..size {
+            bytes[i] = *(page_table.translate_va(va).unwrap().get_ref());
+            va = va + 1;
+        }
+        unsafe { *(bytes.as_slice().as_ptr() as usize as *const T) }
+    } else {
+        *translated_ref(token, ptr)
     }
 }
