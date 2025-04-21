@@ -8,7 +8,7 @@ use crate::{
     fs::{open_file, OpenFlags},
     mm::{translated_byte_buffer, translated_refmut, translated_str, MapPermission, VirtAddr},
     task::{
-        add_task, current_task, current_user_token, exit_current_and_run_next, suspend_current_and_run_next, TaskControlBlock, TaskStatus
+        add_task, current_task, current_user_token, exit_current_and_run_next,  yield_now, TaskControlBlock, TaskStatus
     }, timer::get_time_us,
 };
 
@@ -37,8 +37,8 @@ pub fn sys_exit(exit_code: i32) -> ! {
 }
 
 pub fn sys_yield() -> isize {
-    //trace!("kernel: sys_yield");
-    suspend_current_and_run_next();
+    trace!("kernel: sys_yield");
+    yield_now();
     0
 }
 
@@ -55,13 +55,16 @@ pub fn sys_fork() -> isize {
     let new_task = current_task.fork();
 
     let new_pid = new_task.pid.0;
+    debug!("new_pid:{}",new_pid);
+  
     // modify trap context of new_task, because it returns immediately after switching
     let trap_cx = new_task.inner_exclusive_access().get_trap_cx();
     // we do not have to move to next instruction since we have done it before
     // for child process, fork returns 0
-    trap_cx.x[10] = 0;
+    trap_cx.regs.a0 = 0;
     // add new task to scheduler
     add_task(new_task);
+   
     new_pid as isize
 }
 
