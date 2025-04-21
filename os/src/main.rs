@@ -17,14 +17,13 @@
 //!
 //! We then call [`task::run_tasks()`] and for the first time go to
 //! userspace.
-
 #![deny(missing_docs)]
 #![deny(warnings)]
 #![no_std]
 #![no_main]
 #![feature(panic_info_message)]
 #![feature(alloc_error_handler)]
-
+#![feature(naked_functions)]
 #[macro_use]
 extern crate bitflags;
 #[macro_use]
@@ -46,11 +45,16 @@ pub mod sync;
 pub mod syscall;
 pub mod task;
 pub mod timer;
+// pub mod executor;
+
 pub mod trap;
 ///utils;
+
 pub mod utils;
 use core::arch::{asm, global_asm};
+use alloc::boxed::Box;
 use config::KERNEL_DIRECT_OFFSET;
+use trap::user_task_top;
 
 global_asm!(include_str!("entry.asm"));
 /// clear BSS segment
@@ -83,16 +87,23 @@ pub fn setbootsp() {
 /// the rust entry-point of os
 pub fn rust_main() -> ! {
     clear_bss();
-    println!("[kernel] Hello, world!");
+    println!("[kernel] Hello, !");
     logging::init();
     mm::init();
     mm::remap_test();
     mm::heap_allocator::heap_test();
     trap::init();
-    // trap::enable_timer_interrupt();
-    // timer::set_next_trigger();
+    trap::enable_timer_interrupt();
+    timer::set_next_trigger();
     fs::list_apps();
+    task::init(|| Box::pin(user_task_top()));
+
     task::add_initproc();
-    task::run_tasks();
-    panic!("Unreachable in rust_main!");
+    extern "C" {
+        fn trampoline(tc: usize, has_trap: bool, from_user: bool) -> !;
+    }
+
+    unsafe {
+        trampoline(0, false, false);
+    }
 }

@@ -11,17 +11,21 @@
 //! It then calls different functionality based on what exactly the exception
 //! was. For example, timer interrupts trigger task preemption, and syscalls go
 //! to [`syscall()`].
-
-mod context;
 // use crate::mm::activate_kernel_space;
 //use crate::config:: TRAP_CONTEXT_BASE;
+
+mod context;
 use crate::syscall::syscall;
 use crate::task::{
-    current_trap_cx,exit_current_and_run_next, suspend_current_and_run_next,
+    current_task, current_trap_cx, exit_current_and_run_next, pick_next_task, run_task2, suspend_current_and_run_next, CurrentTask
 };
+
+pub use context::TrapStatus;
 use crate::utils::backtrace;
 use crate::timer::set_next_trigger;
 use core::arch:: global_asm;
+use core::future::poll_fn;
+use core::task::Poll;
 use riscv::register::{satp, sepc, sstatus};
 use riscv::register::{
     mtvec::TrapMode,
@@ -29,34 +33,40 @@ use riscv::register::{
     sie, stval, stvec,
     mstatus::FS,
 };
-
 global_asm!(include_str!("trap.S"));
 
 /// Initialize trap handling
 pub fn init() {
-    set_kernel_trap_entry();
+    set_trap_entry();
     unsafe {
         sstatus::set_fs(FS::Clean);
     }
 }
+
 extern "C" {
-    fn __trap_from_user();
+    fn trap_vector_base();
 }
-fn set_kernel_trap_entry() {
+
+fn set_trap_entry(){
     unsafe {
-        stvec::write(trap_from_kernel as usize, TrapMode::Direct);
+        stvec::write(trap_vector_base as usize, TrapMode::Direct);
     }
-
-        trace!("stvec_kernel:{:#x},true adress :{:#x}",stvec::read().bits(),trap_from_kernel as usize);
 }
+// fn set_kernel_trap_entry() {
+//     unsafe {
+//         stvec::write(trap_from_kernel as usize, TrapMode::Direct);
+//     }
 
-fn set_user_trap_entry() {
-    unsafe {
-        stvec::write(__trap_from_user as usize, TrapMode::Direct);
-    }
+//         trace!("stvec_kernel:{:#x},true adress :{:#x}",stvec::read().bits(),trap_from_kernel as usize);
+// }
 
-        trace!("stvec_user:{:#x},true adress :{:#x}",stvec::read().bits(),__trap_from_user as usize);
-}
+// fn set_user_trap_entry() {
+//     unsafe {
+//         stvec::write(__trap_from_user as usize, TrapMode::Direct);
+//     }
+
+//         trace!("stvec_user:{:#x},true adress :{:#x}",stvec::read().bits(),__trap_from_user as usize);
+// }
 
 /// enable timer interrupt in supervisor mode
 pub fn enable_timer_interrupt() {
@@ -64,12 +74,34 @@ pub fn enable_timer_interrupt() {
         sie::set_stimer();
     }
 }
+/// disable timer interrupt in supervisor mode
+pub fn disable_timer_interrupt() {
+    unsafe {
+        sie::clear_stimer();
+    }
+}
+/// 开启全局中断（允许响应中断）
+#[inline]
+pub fn enable_irqs() {
+    unsafe { sstatus::set_sie() }
+}
+
+///  关闭全局中断（允许响应中断）.
+#[inline]
+pub fn disable_irqs() {
+    unsafe { sstatus::clear_sie() }
+}
+/// Relaxes the current CPU and waits for interrupts.
+///
+/// It must be called with interrupts enabled, otherwise it will never return.
+#[inline]
+pub fn wait_for_irqs() {
+    unsafe { riscv::asm::wfi() }
+}
 
 /// trap handler
 #[no_mangle]
-pub fn trap_handler() {
-    set_kernel_trap_entry();
-    trace!("trap_handler");
+pub async  fn trap_handler( cx: &mut TrapContext) {
 
     let scause = scause::read();
     let stval = stval::read();
@@ -83,14 +115,14 @@ pub fn trap_handler() {
     );
     match scause.cause() {
         Trap::Exception(Exception::UserEnvCall) => {
+            enable_irqs();
+
             // jump to next instruction anyway
-            let mut cx = current_trap_cx();
             cx.sepc += 4;
             // get system call return value
-            let result = syscall(cx.x[17], [cx.x[10], cx.x[11], cx.x[12], cx.x[13]]);
+            let result = syscall(cx.regs.a7, [cx.regs.a0, cx.regs.a1, cx.regs.a2, cx.regs.a3]);
             // cx is changed during sys_exec, so we have to call it again
-            cx = current_trap_cx();
-            cx.x[10] = result as usize;
+            cx.regs.a0 = result as usize;
         }
         Trap::Exception(Exception::StoreFault)
         | Trap::Exception(Exception::StorePageFault)
@@ -136,7 +168,7 @@ pub fn trap_handler() {
 pub fn trap_loop() {
     loop {
         trap_return();
-        trap_handler();
+       
     }
 }
 #[no_mangle]
@@ -162,7 +194,6 @@ pub fn trap_return()   {
     //         options(noreturn)
     //     );
     // }
-    set_user_trap_entry();
     extern "C" {
         #[allow(improper_ctypes)]
         fn __return_to_user(cx: *mut TrapContext);
@@ -180,7 +211,7 @@ pub fn trap_return()   {
 /// Todo: Chapter 9: I/O device
 #[link_section = ".text.trap_entries"]
 
-pub fn trap_from_kernel() -> ! {
+pub fn trap_from_kernel() {
     backtrace();
     let stval = stval::read();
     let sepc = sepc::read();
@@ -198,3 +229,70 @@ pub fn trap_from_kernel() -> ! {
 }
 
 pub use context::TrapContext;
+/// 进入 Trampoline 的方式：
+///   1. 初始化后函数调用：没有 Trap，但存在就绪任务
+///   2. 内核发生 Trap：存在任务被打断（CurrentTask 不为空），或者没有任务被打断（CurrentTask 为空）
+///   3. 用户态发生 Trap：任务被打断，CurrentTask 不为空
+///
+/// 内核发生 Trap 时，将 TrapFrame 保存在内核栈上
+/// 在用户态发生 Trap 时，将 TrapFrame 直接保存在任务控制块中，而不是在内核栈上
+///
+/// 只有通过 trap 进入这个入口时，是处于关中断的状态，剩下的任务切换是没有关中断
+#[no_mangle]
+pub fn trampoline(_tc: &mut TrapContext, has_trap: bool, from_user: bool) {
+    loop {
+        if !from_user && has_trap {
+            // 在内核中发生了 Trap，只处理中断，目前还不支持抢占，因此是否有任务被打断是不做处理的
+            trap_from_kernel();
+            return;
+        } else {
+            // 用户态发生了 Trap 或者需要调度
+            if let Some(curr) = current_task().or_else(|| {
+                if let Some(task) = pick_next_task() {
+                    unsafe {
+                        CurrentTask::init_current(task.clone());
+                    }
+                    Some(task)
+                } else {
+                    None
+                }
+            }) {
+                run_task2(CurrentTask::from(curr));
+            } else {
+                enable_irqs();
+                debug!("no tasks available in run_tasks");
+
+                wait_for_irqs();
+            }
+        }
+    }
+}
+///a future to handle user trap
+/// IMPO
+pub async fn user_task_top() -> i32 {
+    loop {
+
+        let curr = current_task().unwrap();
+        let  tf =  curr.inner_exclusive_access().get_trap_cx();
+        debug!("trap_status:{:?}",tf.trap_status);
+        if tf.trap_status == TrapStatus::Blocked {
+            trap_handler(tf).await;
+           
+            tf.trap_status = TrapStatus::Done;
+            // 判断任务是否退出
+            if curr.is_exited() {
+                // 任务结束，需要切换至其他任务，关中断
+                disable_irqs();
+                return curr.get_exit_code() ;
+            }
+        }
+        poll_fn(|_cx| {
+            if tf.trap_status == TrapStatus::Done {
+                Poll::Pending
+            } else {
+                Poll::Ready(())
+            }
+        })
+        .await
+    }
+}

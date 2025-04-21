@@ -15,7 +15,6 @@ SECTIONS
         *(.text.trap_entries)   /* 存放 trap_from_kernel 和 __trap_from_user */
     . = ALIGN(4K);
         strampoline = .;
-        *(.text.trampoline);
         . = ALIGN(4K);
         *(.text .text.*)
 }

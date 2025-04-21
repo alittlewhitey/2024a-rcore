@@ -28,10 +28,10 @@ pub const MMIO: &[(usize, usize)] = &[(0x10001000, 0x1000)];
 pub const KERNEL_DIRECT_OFFSET: usize = 0xffff_ffc0_0000_0000;
 /// When directly map: vpn = ppn + kernel direct offset
 pub const KERNEL_PGNUM_OFFSET: usize = KERNEL_DIRECT_OFFSET >> PAGE_SIZE_BITS;
-
 /// 定义用户堆的大小，  4MB
 pub const USER_HEAP_SIZE: usize = 0x400_0000;
-
+/// 定义协程堆栈的大小，  4MB
+pub const TASK_STACK_SIZE: usize=0x40000;
 /// 定义用户空间的总大小，48GB
 pub const USER_SPACE_SIZE: usize = 0x30_0000_0000;
 /// 定义最大线程数，3000
@@ -53,3 +53,5 @@ pub const MMAP_TOP: usize = USER_TRAP_CONTEXT_TOP
     - PAGE_SIZE;
 /// Kernel Stack Start
 pub const KSTACK_TOP: usize = usize::MAX - PAGE_SIZE + 1;
+///temp data
+pub const IS_ASYNC: usize = 0x5f5f5f5f;

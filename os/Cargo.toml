@@ -15,7 +15,10 @@ riscv = { git = "https://github.com/rcore-os/riscv", features = ["inline-asm"] }
 xmas-elf = "0.7.0"
 virtio-drivers = { git = "https://github.com/rcore-os/virtio-drivers", rev = "4ee80e5" }
 easy-fs = { path = "../easy-fs" }
-
+cfg-if = { path = "vendor/cfg-if" }
+kernel_guard = { path = "src/kernel_guard" ,features = ["preempt"]}
+lazy_init = { path = "vendor/lazy_init"}
+spin = "0.9"
 [profile.release]
 debug = true
 

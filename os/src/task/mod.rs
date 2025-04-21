@@ -13,29 +13,107 @@
 //!
 //! Be careful when you see `__switch` ASM function in `switch.S`. Control flow around this function
 //! might not be what you expect.
+#![allow(missing_docs)]
+
 mod context;
 mod id;
 mod manager;
 mod processor;
 mod switch;
+mod waker;
+mod kstack;
 #[allow(clippy::module_inception)]
 #[allow(rustdoc::private_intra_doc_links)]
 mod task;
-
+mod yieldfut;
+pub use processor::run_task2;
+pub use kstack::TaskStack;
+use processor::PROCESSOR;
 use crate::fs::{open_file, OpenFlags};
 use alloc::sync::Arc;
 pub use context::TaskContext;
 use lazy_static::*;
-pub use manager::{fetch_task, TaskManager};
+pub use manager::{fetch_task, TaskManager,pick_next_task};
 use switch::__switch;
 pub use task::{TaskControlBlock, TaskStatus};
-
+pub use id::RecycleAllocator;
 pub use id::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
 pub use manager::add_task;
 pub use processor::{
     current_task, current_trap_cx, current_user_token, run_tasks, schedule, take_current_task,
     Processor,
 };
+pub use core::mem::ManuallyDrop;
+pub use processor::init;
+pub use yieldfut::yield_now;
+use core::task::Waker;
+use core::ops::Deref;
+pub struct CurrentTask(ManuallyDrop<Arc<TaskControlBlock>>);
+impl CurrentTask {
+    pub unsafe fn init_current(init_task:Arc<TaskControlBlock> ) {
+        init_task.set_state(TaskStatus::Running);
+        PROCESSOR.exclusive_access().set_current(init_task);
+
+    }
+    /// get a new waker of the CurrentTask;
+    pub fn waker(&self) -> Waker {
+        if let Some(task_arc) = current_task() {
+            let raw: *const TaskControlBlock = Arc::as_ptr(&task_arc);
+            // raw 现在就是指向 TaskControlBlock 的裸指针
+            // 此时不影响 Arc 的引用计数
+
+        waker::waker_from_task(raw as _)
+        }
+        else{
+            panic!("current task is uninitialized");
+        }
+    }
+    // pub fn try_get() -> Option<Self> {
+    //     let ptr: *const super::Task = current_task_ptr();
+    //     if !ptr.is_null() {
+    //         Some(Self(unsafe { ManuallyDrop::new(TaskRef::from_raw(ptr)) }))
+    //     } else {
+    //         None
+    //     }
+    // }
+
+    pub fn from(task: Arc<TaskControlBlock>) -> Self {
+        CurrentTask(ManuallyDrop::new(task))
+    }
+    pub fn get() -> Self {
+       CurrentTask(ManuallyDrop::new(
+            current_task().expect("current task is uninitialized")
+        ))
+    }
+    /// Converts [`CurrentTask`] to [`TaskRef`].
+    pub fn as_task_ref(&self) -> &Arc<TaskControlBlock> {
+        &self.0
+    }
+    pub fn clean_current_without_drop() -> Option<Arc<TaskControlBlock>> {
+        take_current_task()
+    }
+
+    pub fn clone(&self) -> Arc<TaskControlBlock> {
+        self.0.deref().clone()
+    }
+
+    pub fn ptr_eq(&self, other:  &Arc<TaskControlBlock>) -> bool {
+        Arc::ptr_eq(&self.0, other)
+    }
+    pub fn clean_current() {
+        let curr = CurrentTask::get();
+        let Self(arc) = curr;
+        ManuallyDrop::into_inner(arc);
+    }
+}
+
+impl Deref for CurrentTask {
+    type Target = TaskControlBlock;
+    fn deref(&self) -> &Self::Target {
+        self.0.deref()
+    }
+}
+
 /// Suspend the current 'Running' task and run the next task in task list.
 pub fn suspend_current_and_run_next() {
     // There must be an application running.
@@ -45,7 +123,7 @@ pub fn suspend_current_and_run_next() {
     let mut task_inner = task.inner_exclusive_access();
     let task_cx_ptr = &mut task_inner.task_cx as *mut TaskContext;
     // Change status to Ready
-    task_inner.task_status = TaskStatus::Ready;
+    task_inner.set_state(TaskStatus::Runable); 
     drop(task_inner);
     // ---- release current PCB
 
@@ -75,7 +153,7 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     // **** access current TCB exclusively
     let mut inner = task.inner_exclusive_access();
     // Change status to Zombie
-    inner.task_status = TaskStatus::Zombie;
+    inner.set_state(TaskStatus::Zombie); 
     // Record exit code
     inner.exit_code = exit_code;
     // do not move to its parent but under initproc

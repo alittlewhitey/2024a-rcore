@@ -1,16 +1,27 @@
 //! Types related to task management & Functions for completely changing TCB
 use super::TaskContext;
-use super::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
+use super::{kstack_alloc, pid_alloc, PidHandle};
 use crate::config:: {PAGE_SIZE, PRE_ALLOC_PAGES, USER_STACK_SIZE, USER_STACK_TOP, USER_TRAP_CONTEXT_TOP};
 use crate::fs::{File, Stdin, Stdout};
 use crate::mm::{ MapPermission, MemorySet, PageTable, PageTableEntry, PhysPageNum, VPNRange, VirtAddr,MapAreaType};
 use crate::sync::UPSafeCell;
 use crate::task::id::kernel_stack_position;
-use crate::trap:: TrapContext;
+use crate::task::kstack::current_stack_top;
+use crate::task::processor::UTRAP_HANDLER;
+use crate::trap::  TrapContext;
+use alloc::boxed::Box;
+use alloc::collections::vec_deque::VecDeque;
 use alloc::sync::{Arc, Weak};
 use alloc::vec;
 use alloc::vec::Vec;
-use core::cell::RefMut;
+use core::cell::{RefMut, UnsafeCell};
+use core::future::Future;
+use core::mem::ManuallyDrop;
+use core::pin::Pin;
+use core::task::Waker;
+use spin::Mutex;
+unsafe impl Sync for TaskControlBlock{}
+unsafe impl Send for TaskControlBlock {}
 
 /// Task control block structure
 ///
@@ -20,14 +31,17 @@ pub struct TaskControlBlock {
     /// Process identifier
     pub pid: PidHandle,
 
-    /// Kernel stack corresponding to PID
-    pub kernel_stack: KernelStack,
 
+    fut: UnsafeCell<Pin<Box<dyn Future<Output = i32> + 'static>>>,
     /// Mutable
     inner: UPSafeCell<TaskControlBlockInner>,
 }
 
 impl TaskControlBlock {
+ /// 获取到任务的 Future
+    pub fn get_fut(&self) -> &mut Pin<Box<dyn Future<Output = i32> + 'static>> {
+        unsafe { &mut *self.fut.get() }
+    }
     /// Get the mutable reference of the inner TCB
     pub fn inner_exclusive_access(&self) -> RefMut<'_, TaskControlBlockInner> {
         self.inner.exclusive_access()
@@ -37,16 +51,46 @@ impl TaskControlBlock {
         let inner = self.inner_exclusive_access();
         inner.memory_set.token()
     }
+    pub fn set_state(&self, state: TaskStatus) {
+        let inner = self.inner_exclusive_access();
+        *inner.state_lock().lock() = state;
+    }
+    pub fn set_exit_code(&self, code: i32) {
+        let mut inner = self.inner_exclusive_access();
+        inner.exit_code = code;
+    }   
+
+    pub fn wake_all_waiters(&self){
+     let inner = self.inner_exclusive_access();
+        inner.wake_all_waiters();
+
+    }
+    pub fn is_init(&self) -> bool {
+        let inner = self.inner_exclusive_access();
+        inner.is_init
+    }
+    pub fn is_exited(&self) -> bool {
+        let inner = self.inner_exclusive_access();
+        let a= *(inner.task_status.lock()) ;
+        a== TaskStatus::Zombie
+
+    }
+    pub fn get_exit_code(&self) -> i32 {
+        let inner = self.inner_exclusive_access();
+        inner.exit_code
+    }
 }
 
 pub struct TaskControlBlockInner {
+    ///tasktate
     /// The physical page number of the frame where the trap context is placed
     pub trap_cx_ppn: PhysPageNum,
     ///trap上下文的bottom
     pub trap_cx_bottom:usize,
     ///用户栈顶
     pub user_stack_top:usize,
-
+    ///是否初始化
+    pub is_init:bool,
     /// Application data can only appear in areas
     /// where the application address space is lower than base_size
     pub base_size: usize,
@@ -55,7 +99,7 @@ pub struct TaskControlBlockInner {
     pub task_cx: TaskContext,
 
     /// Maintain the execution status of the current process
-    pub task_status: TaskStatus,
+    pub task_status: Mutex<TaskStatus>,
 
     /// Application address space
     pub memory_set: MemorySet,
@@ -76,9 +120,30 @@ pub struct TaskControlBlockInner {
 
     /// Program break
     pub program_brk: usize,
+    ///wait wakers
+    pub wait_wakers: UnsafeCell<VecDeque<Waker>>,
 }
 
 impl TaskControlBlockInner {
+    pub fn set_state(&self, state: TaskStatus) {
+        let mut task_status = self.task_status.lock();
+        *task_status = state;
+    }
+    pub fn wake_all_waiters(&self){
+        let wait_wakers = unsafe { &mut *self.wait_wakers.get() };
+        while let Some(waker) = wait_wakers.pop_front() {
+            waker.wake();
+        }
+    }
+   
+ 
+    #[inline]
+    /// temp
+    /// TODO LOCK
+    pub fn state_lock_manual(&self) -> ManuallyDrop<spin::MutexGuard<'_, TaskStatus>> {
+                ManuallyDrop::new(self.task_status.lock())
+    }
+
     ///插入一个framed_area
     pub fn insert_framed_area(&mut self,
             start_va: VirtAddr,
@@ -178,11 +243,13 @@ impl TaskControlBlockInner {
     pub fn get_user_token(&self) -> usize {
         self.memory_set.token()
     }
-    fn get_status(&self) -> TaskStatus {
-        self.task_status
+    
+    
+    pub fn state_lock(&self) -> &Mutex<TaskStatus> {
+        &self.task_status
     }
     pub fn is_zombie(&self) -> bool {
-        self.get_status() == TaskStatus::Zombie
+       *self.state_lock().lock() == TaskStatus::Zombie
     }
     pub fn alloc_fd(&mut self) -> usize {
         if let Some(fd) = (0..self.fd_table.len()).find(|fd| self.fd_table[*fd].is_none()) {
@@ -211,27 +278,29 @@ impl TaskControlBlock {
     ///
     /// At present, it is only used for the creation of initproc
     pub fn new(elf_data: &[u8]) -> Self {
+
     // alloc a pid and a kernel stack in kernel space
         let pid_handle = pid_alloc();
-        let kernel_stack = kstack_alloc();
         // memory_set with elf program headers/trampoline/trap context/user stack
         let (memory_set, user_sp, entry_point) = MemorySet::from_elf(elf_data);
         trace!("appenter:{:#x}", entry_point);
         
     
-        let (_kernel_stack_bottom, kernel_stack_top) = kernel_stack_position(kernel_stack.0);
         // push a task context which goes to trap_return to the top of kernel stack
       
+        let fut = UTRAP_HANDLER();
         let task_control_block = Self {
             pid: pid_handle,
-            kernel_stack,
+
+            fut: UnsafeCell::new(fut),
             inner: unsafe {
                 UPSafeCell::new(TaskControlBlockInner {
                     trap_cx_ppn:0.into(),
                     base_size: user_sp,
-                    task_cx: TaskContext::goto_trap_return(kernel_stack_top),
-                    task_status: TaskStatus::Ready,
+                    task_cx: TaskContext::goto_trap_return(current_stack_top()),
+                    task_status: Mutex::new(TaskStatus::Runable),
                     memory_set,
+                    is_init:true,
                     parent: None,
                     children: Vec::new(),
                     exit_code: 0,
@@ -247,17 +316,16 @@ impl TaskControlBlock {
                     program_brk: user_sp,
                     trap_cx_bottom:0,
                     user_stack_top:0,
+                    wait_wakers:Default::default(),
                 })
             },
         };
-       
         let mut task_inner = task_control_block.inner_exclusive_access();
         task_inner.alloc_user_res();
         // prepare TrapContext in user space
         let trap_cx = task_inner.get_trap_cx();
         *trap_cx =
             TrapContext::app_init_context(entry_point, task_inner.user_stack_top, 
-            kernel_stack_top,
            );
         drop(task_inner);
         task_control_block
@@ -279,7 +347,6 @@ impl TaskControlBlock {
             let trap_cx = TrapContext::app_init_context(
                 entry_point,
                 inner.user_stack_top,
-                self.kernel_stack.get_top(),
             );
             trace!("exec:sp:{:#x}",trap_cx.kernel_sp);
             *inner.get_trap_cx() = trap_cx;
@@ -315,13 +382,16 @@ impl TaskControlBlock {
         }
         let task_control_block = Arc::new(TaskControlBlock {
             pid: pid_handle,
-            kernel_stack,
+
+                    fut: UnsafeCell::new(UTRAP_HANDLER()),
             inner: unsafe {
                 UPSafeCell::new(TaskControlBlockInner {
+                    is_init:false,
+                    wait_wakers:Default::default(),
                     trap_cx_ppn:0.into(),
                     base_size: parent_inner.base_size,
                     task_cx: TaskContext::goto_trap_return(kernel_stack_top),
-                    task_status: TaskStatus::Ready,
+                    task_status: Mutex::new(TaskStatus::Runable),
                     memory_set,
                     parent: Some(Arc::downgrade(self)),
                     children: Vec::new(),
@@ -342,7 +412,7 @@ impl TaskControlBlock {
         task_inner.clone_user_res(&parent_inner);
         let trap_cx = task_inner.get_trap_cx();
 
-        trap_cx.kernel_sp = kernel_stack_top;
+        trap_cx.kernel_sp = current_stack_top();
 
         parent_inner.children.push(task_control_block.clone());
         // return
@@ -390,14 +460,12 @@ impl TaskControlBlock {
 }
 
 #[derive(Copy, Clone, PartialEq)]
-/// task status: UnInit, Ready, Running, Exited
+/// task status: UnInit, Ready, Running, Exited, Blocked, Zombie
 pub enum TaskStatus {
-    /// uninitialized
-    UnInit,
-    /// ready to run
-    Ready,
-    /// running
-    Running,
-    /// exited
-    Zombie,
+    Running = 0,
+    Runable = 1,
+    Blocking = 2,
+    Waked = 3,
+    Blocked = 4,
+    Zombie= 5,
 }

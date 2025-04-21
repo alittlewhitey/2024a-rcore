@@ -25,6 +25,12 @@ impl TaskManager {
     pub fn fetch(&mut self) -> Option<Arc<TaskControlBlock>> {
         self.ready_queue.pop_front()
     }
+    fn put_prev_task(&mut self, prev: Arc<TaskControlBlock>) {
+        self.ready_queue.push_back(prev);
+    }
+    fn pick_next_task(&mut self) -> Option<Arc<TaskControlBlock>> {
+        self.ready_queue.pop_front()
+    }
 }
 
 lazy_static! {
@@ -41,6 +47,11 @@ pub fn add_task(task: Arc<TaskControlBlock>) {
 
 /// Take a process out of the ready queue
 pub fn fetch_task() -> Option<Arc<TaskControlBlock>> {
-    //trace!("kernel: TaskManager::fetch_task");
     TASK_MANAGER.exclusive_access().fetch()
+}
+pub fn put_prev_task(task: Arc<TaskControlBlock>) {
+    TASK_MANAGER.exclusive_access().put_prev_task(task);
+}
+pub fn pick_next_task() -> Option<Arc<TaskControlBlock>> {
+    TASK_MANAGER.exclusive_access().pick_next_task()
 }
