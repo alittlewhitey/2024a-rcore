@@ -55,3 +55,6 @@ pub fn put_prev_task(task: Arc<TaskControlBlock>) {
 pub fn pick_next_task() -> Option<Arc<TaskControlBlock>> {
     TASK_MANAGER.exclusive_access().pick_next_task()
 }
+pub fn get_task_count() -> usize {
+    TASK_MANAGER.exclusive_access().ready_queue.len()
+}   

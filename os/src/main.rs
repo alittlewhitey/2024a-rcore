@@ -95,8 +95,9 @@ pub fn rust_main() -> ! {
     trap::init();
     trap::enable_timer_interrupt();
     timer::set_next_trigger();
-    fs::list_apps();
+
     task::init(|| Box::pin(user_task_top()));
+    fs::list_apps();
 
     task::add_initproc();
     extern "C" {

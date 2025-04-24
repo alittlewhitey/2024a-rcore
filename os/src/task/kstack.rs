@@ -71,8 +71,14 @@ pub fn pick_current_stack() -> TaskStack {
 pub fn current_stack_top() -> usize {
     let stack_pool = STACK_POOL.lock() ;
 
-    trace!("current ksp:{:#x}",stack_pool.current_stack().top().0);
+    // trace!("current ksp:{:#x}",stack_pool.current_stack().top().0);
     stack_pool.current_stack().top().0
+}
+pub fn current_stack_bottom()->usize{
+      let stack_pool = STACK_POOL.lock() ;
+
+    // trace!("current ksp:{:#x}",stack_pool.current_stack().top().0);
+    stack_pool.current_stack().down().0
 }
 
 #[allow(dead_code)]

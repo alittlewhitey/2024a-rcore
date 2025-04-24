@@ -1,15 +1,12 @@
 //! Process management syscalls
 //!
+
 use alloc::sync::Arc;
-use riscv::register::satp;
 
 use crate::{
-    config::{MAX_SYSCALL_NUM, PAGE_SIZE},
-    fs::{open_file, OpenFlags},
-    mm::{translated_byte_buffer, translated_refmut, translated_str, MapPermission, VirtAddr},
-    task::{
+    config::{MAX_SYSCALL_NUM, PAGE_SIZE},  fs::{open_file, OpenFlags}, mm::{translated_byte_buffer, translated_refmut, translated_str, MapPermission, VirtAddr}, task::{
         add_task, current_task, current_user_token, exit_current_and_run_next,  yield_now, TaskControlBlock, TaskStatus
-    }, timer::get_time_us,
+    }, timer::get_time_us
 };
 
 #[repr(C)]
@@ -30,15 +27,15 @@ pub struct TaskInfo {
     time: usize,
 }
 
-pub fn sys_exit(exit_code: i32) -> ! {
+pub fn sys_exit(exit_code: i32)->isize  {
     trace!("kernel:pid[{}] sys_exit", current_task().unwrap().pid.0);
     exit_current_and_run_next(exit_code);
-    panic!("Unreachable in sys_exit!");
+    exit_code as isize
 }
 
-pub fn sys_yield() -> isize {
+pub async  fn sys_yield() -> isize {
     trace!("kernel: sys_yield");
-    yield_now();
+    yield_now().await;
     0
 }
 
@@ -49,7 +46,6 @@ pub fn sys_getpid() -> isize {
 
 pub fn sys_fork() -> isize {
     trace!("kernel:pid[{}] sys_fork", current_task().unwrap().pid.0);
-    trace!("now satp={:#?}",satp::read().bits()); 
     let current_task = current_task().unwrap();
 
     let new_task = current_task.fork();
@@ -58,10 +54,8 @@ pub fn sys_fork() -> isize {
     debug!("new_pid:{}",new_pid);
   
     // modify trap context of new_task, because it returns immediately after switching
-    let trap_cx = new_task.inner_exclusive_access().get_trap_cx();
     // we do not have to move to next instruction since we have done it before
     // for child process, fork returns 0
-    trap_cx.regs.a0 = 0;
     // add new task to scheduler
     add_task(new_task);
    
@@ -71,15 +65,14 @@ pub fn sys_fork() -> isize {
 pub fn sys_exec(path: *const u8) -> isize {
     trace!("kernel:pid[{}] sys_exec", current_task().unwrap().pid.0);
 
-    trace!("now satp={:#?}",satp::read().bits()); 
     let token = current_user_token();
     let path = translated_str(token, path);
     if let Some(app_inode) = open_file(path.as_str(), OpenFlags::RDONLY) {
         let all_data = app_inode.read_all();
         let task = current_task().unwrap();
+        
         task.exec(all_data.as_slice());
-        task.inner_exclusive_access().memory_set.activate();
-        0
+        task.inner_exclusive_access().memory_set.activate();        0
     } else {
         -1
     }
@@ -92,13 +85,22 @@ pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
     let task = current_task().unwrap();
     // find a child process
 
+    
     // ---- access current PCB exclusively
     let mut inner = task.inner_exclusive_access();
+
+    for i in inner.children.iter(){
+        print!(" {}",{i.pid.0}); 
+    }
+
+        println!(" ");
     if !inner
         .children
         .iter()
         .any(|p| pid == -1 || pid as usize == p.getpid())
     {
+        println!("cant find pid:{} in parent pid:{},and children count = : {} ",
+        pid,task.pid.0,inner.children.len());
         return -1;
         // ---- release current PCB
     }
@@ -108,16 +110,20 @@ pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
         // ++++ release child PCB
     });
     if let Some((idx, _)) = pair {
+        println!("chiled idx is removed");
         let child = inner.children.remove(idx);
         // confirm that child will be deallocated after being removed from children list
-        assert_eq!(Arc::strong_count(&child), 1);
         let found_pid = child.getpid();
         // ++++ temporarily access child PCB exclusively
         let exit_code = child.inner_exclusive_access().exit_code;
+
         // ++++ release child PCB
         *translated_refmut(inner.memory_set.token(), exit_code_ptr) = exit_code;
+        assert_eq!(Arc::strong_count(&child), 1);
         found_pid as isize
+
     } else {
+
         -2
     }
     // ---- release current PCB automatically

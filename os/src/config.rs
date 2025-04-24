@@ -30,8 +30,8 @@ pub const KERNEL_DIRECT_OFFSET: usize = 0xffff_ffc0_0000_0000;
 pub const KERNEL_PGNUM_OFFSET: usize = KERNEL_DIRECT_OFFSET >> PAGE_SIZE_BITS;
 /// 定义用户堆的大小，  4MB
 pub const USER_HEAP_SIZE: usize = 0x400_0000;
-/// 定义协程堆栈的大小，  4MB
-pub const TASK_STACK_SIZE: usize=0x40000;
+/// 定义协程堆栈的大小，  40MB
+pub const TASK_STACK_SIZE: usize=0x400000;
 /// 定义用户空间的总大小，48GB
 pub const USER_SPACE_SIZE: usize = 0x30_0000_0000;
 /// 定义最大线程数，3000
