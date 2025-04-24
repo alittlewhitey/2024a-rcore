@@ -26,6 +26,7 @@ mod kstack;
 #[allow(rustdoc::private_intra_doc_links)]
 mod task;
 mod yieldfut;
+pub use manager::get_task_count;
 pub use processor::run_task2;
 pub use kstack::TaskStack;
 use processor::PROCESSOR;
@@ -40,12 +41,13 @@ pub use id::RecycleAllocator;
 pub use id::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
 pub use manager::add_task;
 pub use processor::{
-    current_task, current_trap_cx, current_user_token, run_tasks, schedule, take_current_task,
+    current_task, current_user_token, run_tasks, schedule, take_current_task,
     Processor,
 };
 pub use core::mem::ManuallyDrop;
 pub use processor::init;
 pub use yieldfut::yield_now;
+pub use processor::current_task_trapctx_ptr;
 use core::task::Waker;
 use core::ops::Deref;
 pub struct CurrentTask(ManuallyDrop<Arc<TaskControlBlock>>);
@@ -100,10 +102,15 @@ impl CurrentTask {
     pub fn ptr_eq(&self, other:  &Arc<TaskControlBlock>) -> bool {
         Arc::ptr_eq(&self.0, other)
     }
-    pub fn clean_current() {
-        let curr = CurrentTask::get();
-        let Self(arc) = curr;
-        ManuallyDrop::into_inner(arc);
+    pub fn clean_current(&mut self) {
+        take_current_task();
+       
+        self.drop();
+    }
+    pub fn drop(&mut self) {
+        unsafe {
+            ManuallyDrop::drop(&mut self.0);
+        }
     }
 }
 
@@ -116,21 +123,22 @@ impl Deref for CurrentTask {
 
 /// Suspend the current 'Running' task and run the next task in task list.
 pub fn suspend_current_and_run_next() {
+    panic!("undo");
     // There must be an application running.
-    let task = take_current_task().unwrap();
+    // let task = take_current_task().unwrap();
  
-    // ---- access current TCB exclusively
-    let mut task_inner = task.inner_exclusive_access();
-    let task_cx_ptr = &mut task_inner.task_cx as *mut TaskContext;
-    // Change status to Ready
-    task_inner.set_state(TaskStatus::Runable); 
-    drop(task_inner);
-    // ---- release current PCB
+    // // ---- access current TCB exclusively
+    // let mut task_inner = task.inner_exclusive_access();
+    // let task_cx_ptr = &mut task_inner.task_cx as *mut TaskContext;
+    // // Change status to Ready
+    // task_inner.set_state(TaskStatus::Runable); 
+    // drop(task_inner);
+    // // ---- release current PCB
 
-    // push back to ready queue.
-    add_task(task);
-    // jump to scheduling cycle
-    schedule(task_cx_ptr);
+    // // push back to ready queue.
+    // add_task(task);
+    // // jump to scheduling cycle
+    // schedule(task_cx_ptr);
 }
 
 /// pid of usertests app in make run TEST=1
@@ -139,32 +147,36 @@ pub const IDLE_PID: usize = 0;
 /// Exit the current 'Running' task and run the next task in task list.
 pub fn exit_current_and_run_next(exit_code: i32) {
     // take from Processor
-    let task = take_current_task().unwrap();
+    let task = current_task().unwrap();
 
-    let pid = task.getpid();
-    if pid == IDLE_PID {
-        println!(
-            "[kernel] Idle process exit with exit_code {} ...",
-            exit_code
-        );
-        panic!("All applications completed!");
-    }
+    println!("exit pid {},exit code:{}",task.pid.0,exit_code);
+    // if pid == IDLE_PID {
+    //     println!(
+    //         "[kernel] Idle process exit with exit_code {} ...",
+    //         exit_code
+    //     );
+    //     panic!("All applications completed!");
+    // }
 
     // **** access current TCB exclusively
     let mut inner = task.inner_exclusive_access();
     // Change status to Zombie
-    inner.set_state(TaskStatus::Zombie); 
-    // Record exit code
+       // Record exit code
     inner.exit_code = exit_code;
     // do not move to its parent but under initproc
 
     // ++++++ access initproc TCB exclusively
+    if task.pid.0 !=0
     {
         let mut initproc_inner = INITPROC.inner_exclusive_access();
         for child in inner.children.iter() {
             child.inner_exclusive_access().parent = Some(Arc::downgrade(&INITPROC));
             initproc_inner.children.push(child.clone());
         }
+    }
+    else{
+        let w = &INITPROC;
+        let _ = w;
     }
     // ++++++ release parent PCB
 
@@ -173,13 +185,12 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     inner.memory_set.recycle_data_pages();
     // drop file descriptors
     inner.fd_table.clear();
+    inner.set_state(TaskStatus::Zombie);
     drop(inner);
     // **** release current PCB
     // drop task manually to maintain rc correctly
     drop(task);
-    // we do not have to save task context
-    let mut _unused = TaskContext::zero_init();
-    schedule(&mut _unused as *mut _);
+
 }
 
 lazy_static! {

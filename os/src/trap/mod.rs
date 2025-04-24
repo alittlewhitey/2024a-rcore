@@ -15,16 +15,18 @@
 //use crate::config:: TRAP_CONTEXT_BASE;
 
 mod context;
-use crate::syscall::syscall;
+use crate::syscall:: syscall;
 use crate::task::{
-    current_task, current_trap_cx, exit_current_and_run_next, pick_next_task, run_task2, suspend_current_and_run_next, CurrentTask
+    current_task, current_task_trapctx_ptr, exit_current_and_run_next, pick_next_task, run_task2, suspend_current_and_run_next, CurrentTask
 };
-
+pub use context::user_return;
+use alloc::sync::Arc;
 pub use context::TrapStatus;
 use crate::utils::backtrace;
 use crate::timer::set_next_trigger;
 use core::arch:: global_asm;
 use core::future::poll_fn;
+use core::panic;
 use core::task::Poll;
 use riscv::register::{satp, sepc, sstatus};
 use riscv::register::{
@@ -99,70 +101,12 @@ pub fn wait_for_irqs() {
     unsafe { riscv::asm::wfi() }
 }
 
-/// trap handler
-#[no_mangle]
-pub async  fn trap_handler( cx: &mut TrapContext) {
 
-    let scause = scause::read();
-    let stval = stval::read();
-    let sepc = sepc::read();
-    trace!(
-        "Trap: cause={:?}, addr={:#x}, sepc={:#x}, satp={:#x}",
-        scause.cause(),
-        stval,
-        sepc,
-        satp::read().bits()
-    );
-    match scause.cause() {
-        Trap::Exception(Exception::UserEnvCall) => {
-            enable_irqs();
 
-            // jump to next instruction anyway
-            cx.sepc += 4;
-            // get system call return value
-            let result = syscall(cx.regs.a7, [cx.regs.a0, cx.regs.a1, cx.regs.a2, cx.regs.a3]);
-            // cx is changed during sys_exec, so we have to call it again
-            cx.regs.a0 = result as usize;
-        }
-        Trap::Exception(Exception::StoreFault)
-        | Trap::Exception(Exception::StorePageFault)
-        | Trap::Exception(Exception::InstructionFault)
-        | Trap::Exception(Exception::InstructionPageFault)
-        | Trap::Exception(Exception::LoadFault)
-        | Trap::Exception(Exception::LoadPageFault) => {
-            
-            println!(
-                "[kernel] trap_handler:  {:?} in application, bad addr = {:#x}, bad instruction = {:#x}, kernel killed it.",
-                scause.cause(),
-                stval,
-                current_trap_cx().sepc,
-            );
-            loop {
-               
-            }
-            // page fault exit code
 
-            // exit_current_and_run_next(-2);
-        }
-        Trap::Exception(Exception::IllegalInstruction) => {
-            println!("[kernel] IllegalInstruction in application, kernel killed it.");
-            // illegal instruction exit code
-            exit_current_and_run_next(-3);
-        }
-        Trap::Interrupt(Interrupt::SupervisorTimer) => {
-            set_next_trigger();
-            suspend_current_and_run_next();
-        }
-        _ => {
-            panic!(
-                "Unsupported trap {:?}, stval = {:#x}!",
-                scause.cause(),
-                stval
-            );
-        }
-    }
     
-}
+    
+
 ///方便调试
 #[no_mangle]
 pub fn trap_loop() {
@@ -197,11 +141,6 @@ pub fn trap_return()   {
     extern "C" {
         #[allow(improper_ctypes)]
         fn __return_to_user(cx: *mut TrapContext);
-    }
-    unsafe {
-        // 方便调试进入__return_to_user
-        let trap_cx = current_trap_cx();
-        __return_to_user(trap_cx);
     }
 }
 
@@ -246,17 +185,25 @@ pub fn trampoline(_tc: &mut TrapContext, has_trap: bool, from_user: bool) {
             trap_from_kernel();
             return;
         } else {
+            // debug!("into trampoline from taskcount:{},task",get_task_count());
             // 用户态发生了 Trap 或者需要调度
             if let Some(curr) = current_task().or_else(|| {
                 if let Some(task) = pick_next_task() {
                     unsafe {
                         CurrentTask::init_current(task.clone());
+                         
+                        //  debug!("get and init next task");
+
                     }
                     Some(task)
                 } else {
                     None
                 }
             }) {
+ debug!("run_task pid:{},Arc count:{}",curr.pid.0,
+                  
+                   Arc::strong_count(&curr)
+                       );
                 run_task2(CurrentTask::from(curr));
             } else {
                 enable_irqs();
@@ -272,27 +219,114 @@ pub fn trampoline(_tc: &mut TrapContext, has_trap: bool, from_user: bool) {
 pub async fn user_task_top() -> i32 {
     loop {
 
+        // debug!("into user_task_top");
         let curr = current_task().unwrap();
-        let  tf =  curr.inner_exclusive_access().get_trap_cx();
-        debug!("trap_status:{:?}",tf.trap_status);
-        if tf.trap_status == TrapStatus::Blocked {
-            trap_handler(tf).await;
+        let inner = curr.inner_exclusive_access();
+        let  tf =  inner.trap_cx.get();
+        drop(inner);
+        // debug!("trap_status:{:?}",tf.trap_status);
+        if (unsafe { (*tf) .trap_status })== TrapStatus::Blocked {
+            let scause = scause::read();
+    let stval = stval::read();
+    let sepc = sepc::read();
+    trace!(
+        "Trap: cause={:?}, addr={:#x}, sepc={:#x}, satp={:#x}",
+        scause.cause(),
+        stval,
+        sepc,
+        satp::read().bits()
+    );
+    match scause.cause() {
+        Trap::Exception(Exception::UserEnvCall) => {
+            enable_irqs();
+            let syscall_id;
+            let args;
+unsafe {
+             syscall_id = (*tf).regs.a7;
+ args = [(*tf).regs.a0, (*tf).regs.a1, (*tf).regs.a2, (*tf).regs.a3];
+
+(*tf).sepc += 4;
+
+}
+let result = syscall(syscall_id, args).await;
+
+trace!("sys_call end");
+
+    let tf = current_task_trapctx_ptr();
+           unsafe {
+               (*tf).regs.a0 = result as usize;
+           } 
+
+trace!("sys_call end1");
+        }
+        Trap::Exception(Exception::StoreFault)
+        | Trap::Exception(Exception::StorePageFault)
+        | Trap::Exception(Exception::InstructionFault)
+        | Trap::Exception(Exception::InstructionPageFault)
+        | Trap::Exception(Exception::LoadFault)
+        | Trap::Exception(Exception::LoadPageFault) => {
+            
+            println!(
+                "[kernel] trap_handler:  {:?} in application, bad addr = {:#x}, bad instruction = {:#x}, kernel killed it.",
+                scause.cause(),
+                stval,
+                unsafe { (*tf).sepc },
+            );
            
-            tf.trap_status = TrapStatus::Done;
+            // page fault exit code
+
+            exit_current_and_run_next(-2);
+        }
+        Trap::Exception(Exception::IllegalInstruction) => {
+            println!("[kernel] IllegalInstruction in application, kernel killed it.");
+            // illegal instruction exit code
+            exit_current_and_run_next(-3);
+        }
+        Trap::Interrupt(Interrupt::SupervisorTimer) => {
+            set_next_trigger();
+            suspend_current_and_run_next();
+        }
+        _ => {
+            panic!(
+                "Unsupported trap {:?}, stval = {:#x}!",
+                scause.cause(),
+                stval
+            );
+        }
+    }
+           
+           let tf=current_task_trapctx_ptr();
+
+            unsafe { (*tf).trap_status = TrapStatus::Done };
+            trace!("sys_call end3");
             // 判断任务是否退出
-            if curr.is_exited() {
+            let curr= current_task().unwrap();
+            let inner =curr.inner_exclusive_access();
+
+            trace!("sys_call end4");
+            if inner.is_zombie() {
                 // 任务结束，需要切换至其他任务，关中断
                 disable_irqs();
-                return curr.get_exit_code() ;
+                // info!("return ready");
+                return inner.exit_code ;
             }
+            drop(inner);
         }
+
+            trace!("sys_call end5");
+        
+           let tf=current_task_trapctx_ptr();
+        //偶数次poll时会从重新运行这个函数开始
         poll_fn(|_cx| {
-            if tf.trap_status == TrapStatus::Done {
+            if (unsafe { (*tf) .trap_status })== TrapStatus::Done {
                 Poll::Pending
             } else {
-                Poll::Ready(())
+
+                Poll::Ready(0)
+
             }
         })
-        .await
+        .await ;
+  
     }
 }

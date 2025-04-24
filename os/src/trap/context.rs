@@ -90,6 +90,25 @@ pub struct TrapContext {
 }
 
 impl TrapContext {
+    /// create a new TrapContext
+    pub fn new()->Self{
+        Self {
+            regs: Default::default(),
+            sstatus: sstatus::read(), 
+            sepc: 0,
+            kernel_sp: 0,
+            kernel_ra: 0,
+            kernel_s: [0; 12],
+            kernel_fp: 0,
+            kernel_tp: 0,
+            origin_a0: 0,
+            fp: [0; 32],
+            fcsr: 0,
+            trap_status: Default::default(),
+            scause: 0,
+            stval: 0,
+        }
+    }
     /// put the sp(stack pointer) into x\[2\] field of TrapContext
     pub fn set_sp(&mut self, sp: usize) {
         self.regs.sp = sp;
@@ -164,10 +183,12 @@ impl TrapContext{
         }
     }
 
-    /// 用户态返回恢复
-    pub fn user_return(&self) -> ! {
+    
+}
+/// 用户态返回恢复
+    pub fn user_return(ctx:*mut TrapContext) -> ! {
         unsafe {
-            let ctx_ptr = self as *const _ as usize;
+            let ctx_ptr = ctx as *const _ as usize;
             asm!(
                 "mv a0, {0}",
                 "jalr zero, {1}, 0",
@@ -177,4 +198,3 @@ impl TrapContext{
             );
         }
     }
-}

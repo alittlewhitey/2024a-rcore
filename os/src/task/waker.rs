@@ -60,6 +60,8 @@ pub fn wakeup_task(task_ptr: *const TaskControlBlock) {
             **state = TaskStatus::Runable;
             let task_ref = unsafe { Arc::from_raw(task_ptr) };
             add_task(task_ref);
+
+            info!("task wakeup?");
         }
         TaskStatus::Waked => panic!("cannot wakeup Waked "),
         // 无法唤醒已经退出的任务
