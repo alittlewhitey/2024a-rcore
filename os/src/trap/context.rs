@@ -3,7 +3,6 @@ use core::arch::asm;
 
 use riscv::register::{scause::{Exception, Interrupt, Trap}, sstatus::{self, Sstatus, SPP}};
 
-use super::trap_loop;
 /// 用于表示内核处理是否处理完成，若处理完，则表示可以进入下一个阶段
 #[repr(usize)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -128,7 +127,6 @@ impl TrapContext {
             sstatus,
             sepc: entry,  // entry point of app
           
-            kernel_ra: trap_loop as usize,
 
             kernel_sp:Default::default(),    // kernel stack
             kernel_s: [0; 12],
@@ -140,6 +138,7 @@ impl TrapContext {
             trap_status:Default::default(),
             scause:0,
             stval:0,
+            kernel_ra: 114514,
         
         };
         cx.set_sp(sp); // app's user stack pointer

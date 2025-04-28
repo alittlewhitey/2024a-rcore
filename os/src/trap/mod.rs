@@ -17,7 +17,7 @@
 mod context;
 use crate::syscall:: syscall;
 use crate::task::{
-    current_task, current_task_trapctx_ptr, exit_current_and_run_next, pick_next_task, run_task2, suspend_current_and_run_next, CurrentTask
+    current_task, current_task_trapctx_ptr, exit_current_and_run_next, pick_next_task, run_task2, task_tick, CurrentTask
 };
 pub use context::user_return;
 use alloc::sync::Arc;
@@ -69,28 +69,30 @@ fn set_trap_entry(){
 
 //         trace!("stvec_user:{:#x},true adress :{:#x}",stvec::read().bits(),__trap_from_user as usize);
 // }
+///irq handle
+
 
 /// enable timer interrupt in supervisor mode
-pub fn enable_timer_interrupt() {
+pub fn enable_irqs() {
     unsafe {
         sie::set_stimer();
     }
 }
 /// disable timer interrupt in supervisor mode
-pub fn disable_timer_interrupt() {
+pub fn disable_irqs() {
     unsafe {
         sie::clear_stimer();
     }
 }
-/// 开启全局中断（允许响应中断）
+/// 开启内核中断
 #[inline]
-pub fn enable_irqs() {
+pub fn enable_kernel_irqs() {
     unsafe { sstatus::set_sie() }
 }
 
-///  关闭全局中断（允许响应中断）.
+///  关闭内核中断
 #[inline]
-pub fn disable_irqs() {
+pub fn disable_kernel_irqs() {
     unsafe { sstatus::clear_sie() }
 }
 /// Relaxes the current CPU and waits for interrupts.
@@ -104,51 +106,8 @@ pub fn wait_for_irqs() {
 
 
 
-    
-    
-
-///方便调试
 #[no_mangle]
-pub fn trap_loop() {
-    loop {
-        trap_return();
-       
-    }
-}
-#[no_mangle]
-/// return to user space
-
-pub fn trap_return()   {
-    // set_user_trap_entry();
-    // let trap_cx_ptr = TRAP_CONTEXT_BASE;
-    // let user_satp = current_user_token();
-    // extern "C" {
-    //     fn __alltraps();
-    //     fn __restore();
-    // }
-    // let restore_va = __restore as usize - __alltraps as usize ;
-    // // trace!("[kernel] trap_return: ..before return");
-    // unsafe {
-    //     asm!(
-    //         "fence.i",
-    //         "jr {restore_va}",
-    //         restore_va = in(reg) restore_va,
-    //         in("a0") trap_cx_ptr,
-    //         in("a1") user_satp,
-    //         options(noreturn)
-    //     );
-    // }
-    extern "C" {
-        #[allow(improper_ctypes)]
-        fn __return_to_user(cx: *mut TrapContext);
-    }
-}
-
-#[no_mangle]
-/// handle trap from kernel
 /// Unimplement: traps/interrupts/exceptions from kernel mode
-/// Todo: Chapter 9: I/O device
-#[link_section = ".text.trap_entries"]
 
 pub fn trap_from_kernel() {
     backtrace();
@@ -156,7 +115,13 @@ pub fn trap_from_kernel() {
     let sepc = sepc::read();
     // let stval_vpn = VirtPageNum::from(stval);
     // let sepc_vpn = VirtPageNum::from(sepc);
-    panic!(
+    let scause = scause::read();
+    match scause.cause()  {
+        Trap::Interrupt(Interrupt::SupervisorTimer)=>{
+
+        }
+        _ =>{
+panic!(
         "stval = {:#x}, sepc = {:#x},
         a trap {:?} from kernel",
         stval,
@@ -165,6 +130,10 @@ pub fn trap_from_kernel() {
         
         scause::read().cause()
     );
+        }
+
+    }
+    
 }
 
 pub use context::TrapContext;
@@ -181,7 +150,7 @@ pub use context::TrapContext;
 pub fn trampoline(_tc: &mut TrapContext, has_trap: bool, from_user: bool) {
     loop {
         if !from_user && has_trap {
-            // 在内核中发生了 Trap，只处理中断，目前还不支持抢占，因此是否有任务被打断是不做处理的
+            // 在内核中发生了 Trap，只处理中断，目前不支持抢占
             trap_from_kernel();
             return;
         } else {
@@ -216,6 +185,7 @@ pub fn trampoline(_tc: &mut TrapContext, has_trap: bool, from_user: bool) {
 }
 ///a future to handle user trap
 /// IMPO
+
 pub async fn user_task_top() -> i32 {
     loop {
 
@@ -250,14 +220,23 @@ unsafe {
 }
 let result = syscall(syscall_id, args).await;
 
-trace!("sys_call end");
+// trace!("sys_call end");
 
     let tf = current_task_trapctx_ptr();
            unsafe {
                (*tf).regs.a0 = result as usize;
            } 
 
-trace!("sys_call end1");
+// trace!("sys_call end1");
+ // 判断任务是否退出
+ let curr = current_task().unwrap();
+ if curr.is_exited() {
+    // 任务结束，需要切换至其他任务，关中断
+    disable_irqs();
+    return curr.get_exit_code() as i32;
+}
+
+disable_irqs();
         }
         Trap::Exception(Exception::StoreFault)
         | Trap::Exception(Exception::StorePageFault)
@@ -284,7 +263,9 @@ trace!("sys_call end1");
         }
         Trap::Interrupt(Interrupt::SupervisorTimer) => {
             set_next_trigger();
-            suspend_current_and_run_next();
+            
+            unsafe {(*tf).trap_status=TrapStatus::Done};
+            task_tick(current_task().unwrap());
         }
         _ => {
             panic!(
@@ -298,22 +279,23 @@ trace!("sys_call end1");
            let tf=current_task_trapctx_ptr();
 
             unsafe { (*tf).trap_status = TrapStatus::Done };
-            trace!("sys_call end3");
+            // trace!("sys_call end3");
             // 判断任务是否退出
             let curr= current_task().unwrap();
             let inner =curr.inner_exclusive_access();
 
-            trace!("sys_call end4");
+            // trace!("sys_call end4");
             if inner.is_zombie() {
                 // 任务结束，需要切换至其他任务，关中断
                 disable_irqs();
                 // info!("return ready");
                 return inner.exit_code ;
             }
+            disable_irqs();
             drop(inner);
         }
 
-            trace!("sys_call end5");
+            // trace!("sys_call end5");
         
            let tf=current_task_trapctx_ptr();
         //偶数次poll时会从重新运行这个函数开始

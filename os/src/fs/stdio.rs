@@ -2,7 +2,7 @@
 use super::File;
 use crate::mm::UserBuffer;
 use crate::sbi::console_getchar;
-use crate::task::suspend_current_and_run_next;
+use crate::task:: yield_now ;
 
 /// stdin file for getting chars from console
 pub struct Stdin;
@@ -24,7 +24,7 @@ impl File for Stdin {
         loop {
             c = console_getchar();
             if c == 0 {
-                suspend_current_and_run_next();
+                yield_now();
                 continue;
             } else {
                 break;

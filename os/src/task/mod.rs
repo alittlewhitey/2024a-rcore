@@ -15,39 +15,36 @@
 //! might not be what you expect.
 #![allow(missing_docs)]
 
-mod context;
 mod id;
-mod manager;
 mod processor;
-mod switch;
 mod waker;
 mod kstack;
+mod schedule;
 #[allow(clippy::module_inception)]
 #[allow(rustdoc::private_intra_doc_links)]
 mod task;
 mod yieldfut;
-pub use manager::get_task_count;
+// pub use manager::get_task_count;
 pub use processor::run_task2;
 pub use kstack::TaskStack;
 use processor::PROCESSOR;
 use crate::fs::{open_file, OpenFlags};
 use alloc::sync::Arc;
-pub use context::TaskContext;
 use lazy_static::*;
-pub use manager::{fetch_task, TaskManager,pick_next_task};
-use switch::__switch;
+// pub use manager::{fetch_task, TaskManager,pick_next_task};
 pub use task::{TaskControlBlock, TaskStatus};
 pub use id::RecycleAllocator;
 pub use id::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
-pub use manager::add_task;
+// pub use manager::add_task;
 pub use processor::{
-    current_task, current_user_token, run_tasks, schedule, take_current_task,
+    current_task, current_user_token, run_tasks,  take_current_task,
     Processor,
 };
 pub use core::mem::ManuallyDrop;
 pub use processor::init;
 pub use yieldfut::yield_now;
 pub use processor::current_task_trapctx_ptr;
+pub use schedule::{add_task,pick_next_task,put_prev_task,task_tick,set_priority};
 use core::task::Waker;
 use core::ops::Deref;
 pub struct CurrentTask(ManuallyDrop<Arc<TaskControlBlock>>);

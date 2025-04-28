@@ -265,7 +265,9 @@ impl TaskControlBlock {
     // alloc a pid and a kernel stack in kernel space
         let pid_handle = pid_alloc();
         // memory_set with elf program headers/trampoline/trap context/user stack
+        // disable_irqs();
         let (memory_set, user_sp, entry_point) = MemorySet::from_elf(elf_data);
+        // enable_irqs();
         trace!("appenter:{:#x}", entry_point);
         
     

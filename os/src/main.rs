@@ -18,10 +18,8 @@
 //! We then call [`task::run_tasks()`] and for the first time go to
 //! userspace.
 #![deny(missing_docs)]
-#![deny(warnings)]
 #![no_std]
 #![no_main]
-#![feature(panic_info_message)]
 #![feature(alloc_error_handler)]
 #![feature(naked_functions)]
 #[macro_use]
@@ -93,14 +91,14 @@ pub fn rust_main() -> ! {
     mm::remap_test();
     mm::heap_allocator::heap_test();
     trap::init();
-    trap::enable_timer_interrupt();
+    trap::enable_irqs();
     timer::set_next_trigger();
 
     task::init(|| Box::pin(user_task_top()));
     fs::list_apps();
 
     task::add_initproc();
-    extern "C" {
+    extern  "C" {
         fn trampoline(tc: usize, has_trap: bool, from_user: bool) -> !;
     }
 
