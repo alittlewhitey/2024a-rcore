@@ -16,7 +16,9 @@ use core::task::{RawWaker, RawWakerVTable, Waker};
 
 use alloc::sync::Arc;
 
-use super::{add_task,  TaskControlBlock, TaskStatus};
+use crate::task::add_task;
+
+use super::{  TaskControlBlock, TaskStatus};
 
 const VTABLE: RawWakerVTable = RawWakerVTable::new(clone, wake, wake, drop);
 
@@ -59,9 +61,9 @@ pub fn wakeup_task(task_ptr: *const TaskControlBlock) {
         TaskStatus::Blocked => {
             **state = TaskStatus::Runable;
             let task_ref = unsafe { Arc::from_raw(task_ptr) };
-            add_task(task_ref);
+             add_task(task_ref);
 
-            info!("task wakeup?");
+            info!("task wakeup   ?");
         }
         TaskStatus::Waked => panic!("cannot wakeup Waked "),
         // 无法唤醒已经退出的任务

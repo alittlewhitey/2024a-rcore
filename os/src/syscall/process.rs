@@ -5,7 +5,7 @@ use alloc::sync::Arc;
 
 use crate::{
     config::{MAX_SYSCALL_NUM, PAGE_SIZE},  fs::{open_file, OpenFlags}, mm::{translated_byte_buffer, translated_refmut, translated_str, MapPermission, VirtAddr}, task::{
-        add_task, current_task, current_user_token, exit_current_and_run_next,  yield_now, TaskControlBlock, TaskStatus
+        add_task, current_task, current_user_token, exit_current_and_run_next, set_priority, yield_now, TaskControlBlock, TaskStatus
     }, timer::get_time_us
 };
 
@@ -275,15 +275,12 @@ pub fn sys_spawn(_path: *const u8) -> isize {
 }
 
 // YOUR JOB: Set task priority.
-pub fn sys_set_priority(_prio: isize) -> isize {
+pub fn sys_set_priority(prio: isize) -> isize {
     trace!(
         "kernel:pid[{}] sys_set_priority NOT IMPLEMENTED",
         current_task().unwrap().pid.0
     );
-    if _prio>=2{
-        _prio
-    }
-    else {
-        -1
-    }
+   
+   set_priority(current_task().unwrap(), prio);
+   0
 }

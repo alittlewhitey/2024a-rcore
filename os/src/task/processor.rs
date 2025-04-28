@@ -8,14 +8,15 @@ use core::future::Future;
 use core::panic;
 use core::pin::Pin;
 use core::task::{Context, Poll};
-
-use super::manager::put_prev_task;
-use super::{CurrentTask,  __switch};
+use spin::mutex::Mutex;
+use schedule::CFScheduler;
+use super::{CurrentTask,   schedule};
 use super:: TaskStatus;
-use super::{TaskContext, TaskControlBlock};
+use super:: TaskControlBlock;
 use crate::sync::UPSafeCell;
 use crate::task::kstack::{self, current_stack_bottom, current_stack_top};
-use crate::trap::{disable_timer_interrupt, user_return, TrapContext, TrapStatus}  ;
+use crate::task::put_prev_task;
+use crate::trap::{ disable_irqs, enable_irqs, user_return, TrapContext, TrapStatus}  ;
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use lazy_init::LazyInit;
@@ -25,8 +26,6 @@ pub struct Processor {
     ///The task currently executing on the current processor
     current: Option<Arc<TaskControlBlock>>,
 
-    ///The basic control flow of each core, helping to select and switch process
-    idle_task_cx: TaskContext,
 }
 
 impl Processor {
@@ -37,14 +36,11 @@ impl Processor {
     pub fn new() -> Self {
         Self {
             current: None,
-            idle_task_cx: TaskContext::zero_init(),
         }
     }
 
-    ///Get mutable reference to `idle_task_cx`
-    fn get_idle_task_cx_ptr(&mut self) -> *mut TaskContext {
-        &mut self.idle_task_cx as *mut _
-    }
+    //Get mutable reference to `idle_task_cx`
+    
 
     ///Get current task in moving semanteme
     pub fn take_current(&mut self) -> Option<Arc<TaskControlBlock>> {
@@ -64,6 +60,7 @@ impl Processor {
 lazy_static! {
     pub static ref PROCESSOR: UPSafeCell<Processor> = unsafe { UPSafeCell::new(Processor::new()) };
 }
+pub static KERNEL_SCHEDULER: LazyInit<Arc<Mutex<CFScheduler<Arc<TaskControlBlock>>>>> = LazyInit::new();
 pub static UTRAP_HANDLER: LazyInit<fn() -> Pin<Box<dyn Future<Output = i32> + 'static>>> =
     LazyInit::new();
 ///The main part of process execution and scheduling
@@ -121,12 +118,14 @@ pub fn run_task2(mut curr:CurrentTask){
                             (*tf).kernel_sp = kstack::current_stack_top();
                             (*tf).scause = 0;
                             // 这里不能打开中断
-                            disable_timer_interrupt();
+                            disable_irqs();
                             drop(core::mem::ManuallyDrop::into_inner(state));
                             
                             trace!("user return return val: {} sepc:{:#x}",(*tf).regs.a0,(*tf).sepc);
                             drop(inner);
                             curr.drop();
+                            
+                            enable_irqs();
                             user_return(tf);  
 
                         }
@@ -135,7 +134,7 @@ pub fn run_task2(mut curr:CurrentTask){
                             drop(core::mem::ManuallyDrop::into_inner(state));
                             drop(inner);
 }
-                    put_prev_task(curr.clone());
+                    put_prev_task(curr.clone(),true);
                     trace!("current task is cleared ,and put curr Arc count:{}",Arc::strong_count(curr.as_task_ref()));
                            curr.clean_current();
                             return ;
@@ -205,14 +204,14 @@ pub fn current_task_trapctx_ptr()->*mut TrapContext{
 
 
 ///Return to idle control flow for new scheduling
-pub fn schedule(switched_task_cx_ptr: *mut TaskContext) {
-    let mut processor = PROCESSOR.exclusive_access();
-    let idle_task_cx_ptr = processor.get_idle_task_cx_ptr();
-    drop(processor);
-    unsafe {
-        __switch(switched_task_cx_ptr, idle_task_cx_ptr);
-    }
-}
+// pub fn schedule(switched_task_cx_ptr: *mut TaskContext) {
+//     let mut processor = PROCESSOR.exclusive_access();
+//     let idle_task_cx_ptr = processor.get_idle_task_cx_ptr();
+//     drop(processor);
+//     unsafe {
+//         __switch(switched_task_cx_ptr, idle_task_cx_ptr);
+//     }
+// }
 // Initializes the Processor
 pub fn init(utrap_handler: fn() -> Pin<Box<dyn Future<Output = i32> + 'static>>) {
     info!("Initialize executor...");
@@ -222,4 +221,11 @@ pub fn init(utrap_handler: fn() -> Pin<Box<dyn Future<Output = i32> + 'static>>)
     info!("current kernel stack bottom:{:#x}",current_stack_bottom());
     // kstack::alloc_current_stack();
     UTRAP_HANDLER.init_by(utrap_handler);
+    let scheduler = CFScheduler::new();
+    KERNEL_SCHEDULER.init_by(Arc::new(Mutex::new(scheduler)));
 }
+
+
+
+
+
