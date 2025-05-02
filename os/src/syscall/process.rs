@@ -51,7 +51,6 @@ pub fn sys_fork() -> isize {
     let new_task = current_task.fork();
 
     let new_pid = new_task.pid.0;
-    debug!("new_pid:{}",new_pid);
   
     // modify trap context of new_task, because it returns immediately after switching
     // we do not have to move to next instruction since we have done it before
@@ -89,11 +88,8 @@ pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
     // ---- access current PCB exclusively
     let mut inner = task.inner_exclusive_access();
 
-    for i in inner.children.iter(){
-        print!(" {}",{i.pid.0}); 
-    }
+   
 
-        println!(" ");
     if !inner
         .children
         .iter()
@@ -110,7 +106,6 @@ pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
         // ++++ release child PCB
     });
     if let Some((idx, _)) = pair {
-        println!("chiled idx is removed");
         let child = inner.children.remove(idx);
         // confirm that child will be deallocated after being removed from children list
         let found_pid = child.getpid();
