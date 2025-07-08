@@ -6,9 +6,10 @@ use log::{Level, LevelFilter, Log, Metadata, Record};
 struct SimpleLogger;
 
 impl Log for SimpleLogger {
-    fn enabled(&self, _metadata: &Metadata) -> bool {
-        true
+    fn enabled(&self, metadata: &Metadata) -> bool {
+        metadata.level() <= log::max_level()
     }
+
     fn log(&self, record: &Record) {
         if !self.enabled(record.metadata()) {
             return;
@@ -27,6 +28,7 @@ impl Log for SimpleLogger {
             record.args(),
         );
     }
+
     fn flush(&self) {}
 }
 
@@ -44,5 +46,4 @@ pub fn init() {
         Some("TRACE") => LevelFilter::Trace,
         _ => LevelFilter::Off,
     });
-    
 }

@@ -25,14 +25,19 @@ lwext4_rust = { path = "lwext4_rust" }
 async-trait = "0.1.88"
 futures = { version = "0.3", default-features = false, features = ["alloc"] }
 libc = "0.2"
-polyhal = { version = "0.4.0"}
-polyhal-boot = { version = "0.4.0" }
+polyhal = { path="src/polyhal"}
+polyhal-boot = { path="src/polyhal-boot" }
 fdt = "0.1.5"
 fdt-parser = { version = "0.4.12" }
 linkme = { version = "0.3.22", features = ["used_linker"] }
 
-loongArch64 = "0.2.5"
-riscv ={path = "riscv"}
+[target.'cfg(target_arch = "loongarch64")'.dependencies]
+loongArch64 = "0.2.4"
+ns16550a = "0.5.0"
+
+[target.'cfg(target_arch = "riscv64")'.dependencies]
+riscv = "0.13.0"
+sbi-rt = { version = "0.0.2", features = ["legacy"] }
 [profile.release]
 debug = false 
 opt-level = 3

@@ -1,13 +1,6 @@
 //! Implementation of [`TrapContext`]
-use core::arch::asm;
 
-use loongArch64::register::prmd::{set_pplv, Prmd};
 
-#[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
-use riscv::register::{
-    scause::{Exception, Interrupt, Trap},
-    sstatus::{self, Sstatus, SPP},
-};
 
 use crate::task::current_stack_top;
 
@@ -140,7 +133,7 @@ pub struct TrapContext {
 fn read_sstatus() -> usize {
     #[cfg(target_arch = "riscv64")]
     {
-        sstatus::read().bits()
+        riscv::register::sstatus::read().bits()
     }
     #[cfg(target_arch = "loongarch64")]
     {
@@ -203,8 +196,9 @@ impl TrapContext {
     }
     /// init the trap context of an application
     pub fn app_init_context(entry: usize, sp: usize) -> Self {
+         
         #[cfg(target_arch = "riscv64")]
-        let mut sstatus = sstatus::read();
+        let mut sstatus = riscv::register::sstatus::read();
         #[cfg(target_arch = "loongarch64")]
         let mut prmd = {
             use loongArch64::register::prmd;
@@ -214,7 +208,7 @@ impl TrapContext {
         // set CPU privilege to User after trapping back
         #[cfg(target_arch = "riscv64")]
         {
-            sstatus.set_spp(SPP::User);
+            unsafe { riscv::register::sstatus::set_spp(riscv::register::sstatus::SPP::User) };
         }
 
         #[cfg(target_arch = "loongarch64")]

@@ -3,9 +3,11 @@ use riscv::register::{
     mstatus::FS,
     mtvec::TrapMode,
     sie, sstatus, stvec,
-    scause::{self, Exception, Interrupt, Trap, Scause},
+    scause::{self ,Trap, Scause},
     stval, sepc, satp,
+   
 };
+use riscv::interrupt::{Exception, Interrupt};
 use super::super::TrapArch;
 
 global_asm!(include_str!("trap.S"));
@@ -30,7 +32,11 @@ impl TrapArch for RiscV64Trap {
     
     fn set_trap_vector() {
         unsafe {
-            stvec::write(trap_vector_base as usize, TrapMode::Direct);
+            
+            let mut stvec = stvec::Stvec::from_bits(0);
+            stvec.set_address(trap_vector_base as usize);
+            stvec.set_trap_mode(stvec::TrapMode::Direct);
+            stvec::write(stvec);
         }
     }
     
@@ -86,40 +92,8 @@ impl TrapArch for RiscV64Trap {
         satp::read().bits()
     }
     
-    fn is_syscall(cause: &Self::Scause) -> bool {
-        matches!(cause.cause(), Trap::Exception(Exception::UserEnvCall))
-    }
+   
     
-    fn is_page_fault(cause: &Self::Scause) -> bool {
-        matches!(cause.cause(), 
-            Trap::Exception(Exception::StorePageFault) |
-            Trap::Exception(Exception::LoadPageFault) |
-            Trap::Exception(Exception::InstructionPageFault)
-        )
-    }
-    
-    fn is_timer_interrupt(cause: &Self::Scause) -> bool {
-        matches!(cause.cause(), Trap::Interrupt(Interrupt::SupervisorTimer))
-    }
-    
-    fn is_illegal_instruction(cause: &Self::Scause) -> bool {
-        matches!(cause.cause(), Trap::Exception(Exception::IllegalInstruction))
-    }
-    
-    fn is_breakpoint(cause: &Self::Scause) -> bool {
-        matches!(cause.cause(), Trap::Exception(Exception::Breakpoint))
-    }
-    
-    fn is_store_fault(cause: &Self::Scause) -> bool {
-        matches!(cause.cause(), Trap::Exception(Exception::StoreFault))
-    }
-    
-    fn is_load_fault(cause: &Self::Scause) -> bool {
-        matches!(cause.cause(), Trap::Exception(Exception::LoadFault))
-    }
-    
-    fn is_instruction_fault(cause: &Self::Scause) -> bool {
-        matches!(cause.cause(), Trap::Exception(Exception::InstructionFault))
-    }
+  
     fn syscall_instruction_len() -> usize { 4 }
 }

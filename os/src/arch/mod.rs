@@ -3,9 +3,9 @@ cfg_if::cfg_if! {
         mod riscv64;
         pub use riscv64::*;
         pub use riscv64::trap::RiscV64Trap as CurrentTrap;
-        pub type Exception = riscv::register::scause::Exception;
+        pub type Exception = riscv::interrupt::supervisor::Exception;
 
-        pub type Interrupt = riscv::register::scause::Interrupt;
+        pub type Interrupt = riscv::interrupt::supervisor::Interrupt;
     } else if #[cfg(target_arch = "loongarch64")] {
         mod loongarch64;
         pub use loongarch64::*;
@@ -40,13 +40,6 @@ pub trait TrapArch {
     fn read_stval() -> usize;
     fn read_sepc() -> usize;
     fn read_satp() -> usize;
-    fn is_syscall(cause: &Self::Scause) -> bool;
-    fn is_page_fault(cause: &Self::Scause) -> bool;
-    fn is_timer_interrupt(cause: &Self::Scause) -> bool;
-    fn is_illegal_instruction(cause: &Self::Scause) -> bool;
-    fn is_breakpoint(cause: &Self::Scause) -> bool;
-    fn is_store_fault(cause: &Self::Scause) -> bool;
-    fn is_load_fault(cause: &Self::Scause) -> bool;
-    fn is_instruction_fault(cause: &Self::Scause) -> bool;
+ 
     fn syscall_instruction_len() -> usize;
 }

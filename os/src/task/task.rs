@@ -493,7 +493,7 @@ impl ProcessControlBlock {
             children: Mutex::new(Vec::new()),
             exit_code: AtomicI32::new(1),
             heap_bottom: AtomicUsize::new(user_sp),
-            program_brk: AtomicUsize::new(user_sp),
+            program_brk: AtomicUsize::new(user_sp+PAGE_SIZE),
             memory_set: Arc::new(Mutex::new(memory_set)),
             main_task: Mutex::new(new_task.clone()),
             tasks: Mutex::new(vec![new_task.clone()]),
@@ -734,8 +734,8 @@ impl ProcessControlBlock {
 
         // println!("{:#?}",trap_cx);
         trace!("exec:sp:{:#x}", trap_cx.kernel_sp);
-        self.set_heap_bottom((user_heap_base + PAGE_SIZE) & !(PAGE_SIZE-1));
-        self.set_program_brk((user_heap_base + PAGE_SIZE) & !(PAGE_SIZE-1));
+        self.set_heap_bottom(user_heap_base );
+        self.set_program_brk(user_heap_base + PAGE_SIZE);
         Ok(())
         // **** release current PCB
     }

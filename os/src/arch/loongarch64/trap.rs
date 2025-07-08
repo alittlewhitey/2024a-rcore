@@ -210,43 +210,7 @@ impl TrapArch for LoongArch64Trap {
         val
     }
     
-    fn is_syscall(cause: &Self::Scause) -> bool {
-        !cause.is_interrupt() && cause.code() == 11 // SYS exception
-    }
-    
-    fn is_page_fault(cause: &Self::Scause) -> bool {
-        if cause.is_interrupt() {
-            return false;
-        }
-        match cause.code() {
-            1 | 2 | 3 | 4 => true, // PIL, PIS, PIF, PME
-            _ => false,
-        }
-    }
-    
-    fn is_timer_interrupt(cause: &Self::Scause) -> bool {
-        cause.is_interrupt() && (cause.bits & 0x800) != 0 // Timer interrupt bit
-    }
-    
-    fn is_illegal_instruction(cause: &Self::Scause) -> bool {
-        !cause.is_interrupt() && cause.code() == 12 // INE (Instruction Not Exist)
-    }
-    
-    fn is_breakpoint(cause: &Self::Scause) -> bool {
-        !cause.is_interrupt() && cause.code() == 14 // BRK (Breakpoint)
-    }
-    
-    fn is_store_fault(cause: &Self::Scause) -> bool {
-        !cause.is_interrupt() && cause.code() == 6 // ALE for store
-    }
-    
-    fn is_load_fault(cause: &Self::Scause) -> bool {
-        !cause.is_interrupt() && cause.code() == 5 // ALE for load
-    }
-    
-    fn is_instruction_fault(cause: &Self::Scause) -> bool {
-        !cause.is_interrupt() && cause.code() == 7 // ADEF (Address Error for Fetch)
-    }
+ 
     
     fn syscall_instruction_len() -> usize { 4 }
 }

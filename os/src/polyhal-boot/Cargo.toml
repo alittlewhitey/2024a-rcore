@@ -36,7 +36,7 @@ path = "src/lib.rs"
 version = "1.0.0"
 
 [dependencies.polyhal]
-version = "0.4.0"
+path = "../polyhal"
 
 [target.'cfg(target_arch = "aarch64")'.dependencies.aarch64-cpu]
 version = "9.3"

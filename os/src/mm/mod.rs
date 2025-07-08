@@ -59,7 +59,6 @@ pub fn init() {
 
     KERNEL_PAGE_TABLE_PPN.init_by(ms.page_table.root_ppn());
     KERNEL_SPACE.init_by(Arc::new(Mutex::new(ms)));
-    activate_by_token(*KERNEL_PAGE_TABLE_TOKEN);
     
 }
 
@@ -68,7 +67,8 @@ pub fn init() {
 pub fn activate_by_token(satp: usize) {
     #[cfg(target_arch = "riscv64")]
     unsafe {
-        riscv::register::satp::write(satp);
+       
+        riscv::register::satp::write(riscv::register::satp::Satp::from_bits(satp));
         asm!("sfence.vma");
     }
     #[cfg(target_arch = "loongarch64")]
@@ -102,13 +102,17 @@ pub fn flush_all() {
     
 }
 
- #[cfg(target_arch = "loongarch64")]
 #[inline]
 pub fn  flush_tlb(va:usize){
-   
+    #[cfg(target_arch = "riscv64")]
+unsafe {
+    core::arch::riscv64::sfence_vma(va, 0);
+}
+ #[cfg(target_arch = "loongarch64")]
     unsafe {
         core::arch::asm!("dbar 0; invtlb 0x05, $r0, {reg}", reg = in(reg) va);
     }
     
 
 }
+

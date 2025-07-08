@@ -8,6 +8,7 @@ use crate::utils::bpoint;
 use alloc::collections::btree_map::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::error;
 use core::fmt::{self, Debug, Formatter};
 use bit_field::{BitArray, BitField};
 use lazy_static::lazy_static;
@@ -183,6 +184,7 @@ impl FrameAllocator {
                 return Some(ppn);
             }
         }
+        error!("no memory-framealloc :{:#?}",self);
         None
     }
 

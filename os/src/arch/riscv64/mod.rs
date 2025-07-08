@@ -1,7 +1,7 @@
 use core::arch::global_asm;
 use core::arch::asm;
 
-global_asm!(include_str!("entry.asm"));
+// global_asm!(include_str!("entry.asm"));
 global_asm!(include_str!("signal.S"));
 
 pub mod trap;
@@ -50,8 +50,8 @@ pub use  riscv::register::scause::Trap;
 pub struct Scause(register::scause::Scause);
 
 impl Scause {
-    pub fn cause(&self) ->Trap {
-        self.0.cause()
+    pub fn cause(&self) ->Trap <riscv::interrupt::supervisor::Interrupt, riscv::interrupt::supervisor::Exception> {
+        riscv::interrupt::supervisor::cause()
     }
 }
 

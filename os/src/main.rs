@@ -25,6 +25,7 @@
 #![feature(linked_list_retain)]
 #![feature(linked_list_cursors)]
 #![feature(used_with_arg)]
+#![feature(riscv_ext_intrinsics)]
 #[macro_use]
 extern crate bitflags;
 #[macro_use]
@@ -92,62 +93,12 @@ impl polyhal::common::PageAlloc for PageAllocImpl {
     }
 }
 
-// #[export_name = "_interrupt_for_arch"]
-// /// Handle kernel interrupt
-// fn kernel_interrupt(cx_ref: &mut polyhal_trap::trapframe::TrapFrame, trap_type: polyhal_trap::trap::TrapType) {
-//             warn!("trap_type: {:?}  ", trap_type);
-//     match trap_type {
-     
-//         TrapType::Timer => {
-//             polyhal::timer::set_next_timer(polyhal::timer::current_time() + Duration::from_millis(10));
-//         }
-        
-//         TrapType::SupervisorExternal => {
-//             handle_external_interrupt();
-//         }
-//         _ => {
-            
-//             debug!("kernel_interrupt");
-//         }
-//     };
-// }
-// /// Handles external interrupts on LoongArch by querying the CPU's EIOI controller.
-// pub fn handle_external_interrupt() {
-//     // if let Some(int_driver) = devices::INT_DEVICE.try_get() {
-//     //     while let Some(irq) = int_driver.claim() {
-//     //         // 查找并调用注册的驱动处理程序
-//     //         let handler = drivers::IRQ_HANDLERS.lock().get(&irq).cloned();
-            
-//     //         if let Some(driver) = handler {
-//     //             // driver.handle_irq();
-//     //         } else {
-//     //             warn!("Unhandled IRQ: {}", irq);
-//     //         }
-            
-//     //         int_driver.complete(irq);
-//     //     }
-//     // }
-// }
 
-
-// #[no_mangle]
-// ///立即数高于12位用rust处理
-// pub fn setbootsp() {
-//    unsafe {
-//         asm!("add sp, sp, {}", in(reg) KERNEL_DIRECT_OFFSET);
-//         asm!("la t0, rust_main");
-//         asm!("add t0, t0, {}", in(reg) KERNEL_DIRECT_OFFSET );
-//         asm!("jalr zero, 0(t0)");
-       
-//     }
-// }
-/// the rust entry-point of os
-/// 
 pub fn main(hart_id:usize) -> ! {
-    #[cfg(target_arch="riscv64")]
-    clear_bss();
+
     println!("[kernel] Hello, !");
     polyhal::irq::IRQ::int_disable();
+    #[cfg(target_arch="loongarch64")]
     println!("dmw1:{:#x},dmw0 :{:#x}",loongArch64::register::dmw1::read().raw(),loongArch64::register::dmw0::read().raw());
     logging::init();
     polyhal::common::init(&PageAllocImpl);
@@ -169,7 +120,7 @@ pub fn main(hart_id:usize) -> ! {
     
     // task::add_initproc("/", "/musl/busybox",  "sh /initproc.sh");
 
-    task::add_initproc("/musl", "/musl/busybox",  "sh /musl/ltp_testcode.sh");
+    // task::add_initproc("/musl", "/musl/busybox",  "sh /musl/ltp_testcode.sh");
     // task::add_initproc("/", "/musl/busybox",  "sh /write_tmp.sh");
     //  task::add_initproc("/basic", "/basic/sigtest", "");
 

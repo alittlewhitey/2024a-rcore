@@ -35,11 +35,11 @@ pub struct PageTableEntry {
     /// bits of page table entry
     pub bits: usize,
 }
-
+const PTE_V: usize = 1 << 0; 
 impl PageTableEntry {
     pub fn new_table(paddr: PhysAddr) -> Self {
         assert!(paddr.0%PAGE_SIZE==0);
-        Self{bits: paddr.0 }
+        PageTableEntry{bits: (paddr.0 >> 2) | (PTEFlags::V).bits() as usize}
     }
     const PHYS_ADDR_MASK: usize = (1 << 54) - (1 << 10); // bits 10..54
     /// Create a new page table entry
@@ -53,7 +53,7 @@ impl PageTableEntry {
         PageTableEntry { bits: 0 }
     }
     pub fn address(&self)->PhysAddr{
-        PhysAddr::from((self.bits) & 0xffff_ffff_f000)
+        PhysAddr::from((self.bits << 2) & 0xFFFF_FFFF_F000)
     }
     /// Get the physical page number from the page table entry
     pub fn ppn(&self) -> PhysPageNum {

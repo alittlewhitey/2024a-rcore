@@ -162,7 +162,6 @@ pub fn va_is_valid(va: usize,token:usize) -> bool {
 #[inline(never)]         // 禁止内联
 #[no_mangle]            
                
-#[export_name = "bpoint"] 
 pub const    fn bpoint()->i32{
     let mut _a=1;
     return _a;

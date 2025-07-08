@@ -17,6 +17,7 @@ use core::{any::Any, future::Future, panic, task::{Context, Poll, Waker}};
 use alloc::vec::Vec;
 use async_trait::async_trait;
 use dev::{find_device, open_device_file, register_device};
+use fdt_parser::Node;
 use crate::devices::get_blk_devices;
 
 use crate::{ drivers, fs::vfs::VfsManager, mm::UserBuffer, task::custom_noop_waker, timer::get_time_ms, utils::{ error::{ASyncRet, ASyscallRet, GeneralRet, SysErrNo, SyscallRet, TemplateRet}, string::{get_parent_path_and_filename, normalize_absolute_path}}};
@@ -386,13 +387,13 @@ pub fn map_dynamic_link_file(path: &str) -> &str {
     // 如果路径以 /lib64/ 开头，先替换为 /lib/
     let mut new_path = if path.starts_with("/lib64/") {
         let replaced = path.replacen("/lib64/", "/lib/", 1);
-        log::warn!("[map_dynamic] replace path: {} -> {}", path, replaced);
+        log::info!("[map_dynamic] replace path: {} -> {}", path, replaced);
         replaced
     } else {
         path.to_string()
     };
 
-    log::warn!("[map_dynamic] path={}", new_path);
+    log::info!("[map_dynamic] path={}", new_path);
 
     if !new_path.starts_with('/') {
         panic!("worth path");
@@ -704,18 +705,34 @@ pub fn init(){
     crate::devices::prepare_drivers();
 
     if let Ok(fdt) = polyhal::mem::get_fdt() {
-        for node in fdt.all_nodes() {
+        // 收集所有带有 reg 的节点 (address, node)
+        let mut nodes_with_reg: Vec<(usize, Node)> = fdt
+            .all_nodes()
+            .filter_map(|node: Node| {
+                node.reg()
+                    .and_then(|mut reg| reg.next())
+                    .map(|r| (r.address as usize, node))
+            })
+            .collect();
+    
+        // 按物理地址排序，保证 address 小的先注册
+        nodes_with_reg.sort_by_key(|(addr, _)| *addr);
+    
+        // 依次注册
+        for (addr, node) in nodes_with_reg {
+            println!("node:{:#x}", addr);
             crate::devices::try_to_add_device(&node);
         }
     }
-        // get devices and init
-        crate::devices::regist_devices_irq();
+    
+    // 所有设备注册完毕后再统一初始化 IRQ
+    crate::devices::regist_devices_irq();
 
     
     if !get_blk_devices().is_empty()  {
     VfsManager::mount("/dev/vda", "/", "ext4", 0, None).unwrap();
     create_file("/usr", OpenFlags::O_CREATE |OpenFlags:: O_DIRECTORY, DEFAULT_DIR_MODE, root_inode()).unwrap();
-    // VfsManager::mount("/dev/vdb", "/usr", "ext4", 0, None).unwrap();
+    VfsManager::mount("/dev/vdb", "/usr", "ext4", 0, None).unwrap();
     }
     else{
         panic!();

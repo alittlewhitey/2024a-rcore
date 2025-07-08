@@ -352,7 +352,7 @@ let _ = memory_set.push(
             ),
             None,
         );
-        info!("mapping physical memory {:#x} -{:#x}  ",(_ekernel as usize),MEMORY_END);
+        info!("mapping physical memory {:#x} -{:#x} Framealocc remain:{} ",(_ekernel as usize),MEMORY_END,crate::mm::frame_allocator::remaining_frames());
         let _ = memory_set.push(
             MapArea::new(
                 (_ekernel as usize).into(),
@@ -541,7 +541,7 @@ log::info!("[map_elf_load] segment {}: file_offset=0x{:x}, mem_size=0x{:x}, star
         memory_set.push(
             MapArea::new(
                 user_heap_bottom.into(),
-                user_heap_top.into(),
+                (user_heap_top+PAGE_SIZE).into(),
                 MapType::Framed,
                 MapPermission::R | MapPermission::W | MapPermission::U,
                 MapAreaType::Brk,
@@ -711,7 +711,9 @@ pub async  fn from_existed_user1(user_space: &mut Self) -> Self {
         #[cfg(target_arch = "riscv64")]
         unsafe {
             let satp = self.page_table.token();
-            satp::write(satp);
+            satp::write(
+            satp::Satp::from_bits(satp)
+);
             asm!("sfence.vma");
         }
         #[cfg(target_arch = "loongarch64")]
@@ -829,6 +831,7 @@ pub async  fn safe_translate_va(&mut self, va: VirtAddr) -> Option<PhysAddr> {
             area.append_to(&mut self.page_table, new_end.ceil());
             true
         } else {
+            self.areatree.debug_print();
             false
         }
     }

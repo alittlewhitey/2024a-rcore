@@ -84,6 +84,7 @@ pub fn get_percpu_ptr() -> usize {
 pub fn set_local_thread_pointer(cpu_id: usize) {
     // Get initial per-CPU data area
     let alloc_size = __stop_percpu as usize - __start_percpu as usize + PERCPU_RESERVED;
+    println!("__start_percpu: {:#x}, __stop_percpu: {:#x}", __start_percpu as usize, __stop_percpu as usize);
     // Alloc PerCPU Area
     let dst = unsafe { crate::mem::alloc(alloc_size).add(VIRT_ADDR_START) };
 

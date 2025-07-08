@@ -1,7 +1,8 @@
 OUTPUT_ARCH(%ARCH%)
 ENTRY(_start)
+/* 高地址 */
+BASE_ADDRESS = %KERNEL_BASE%;  
 
-BASE_ADDRESS = %KERNEL_BASE%;
 
 
 SECTIONS
@@ -10,7 +11,7 @@ SECTIONS
     _skernel = .;
      skernel = .;
     /* 代码段 */
-      .text ALIGN(4K): {
+      .text ALIGN(4K) : AT(0x80200000) {
         *(.multiboot .multiboot.*)
          stext = .;
         *(.text.entry)
@@ -68,17 +69,8 @@ SECTIONS
     
     . = ALIGN(4K);
     
-    /* 每CPU数据段 */
-    spercpu = .;
-    .percpu : {
-        _percpu_load_start = .;
-        *(.percpu .percpu.*)
-        _percpu_load_end = .;
-        . = ALIGN(64);
-    }
-    epercpu = .;
     
-    . = ALIGN(4K);
+    
     edata = .;
     
     sbss_with_stack = .;

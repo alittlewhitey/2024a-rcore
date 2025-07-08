@@ -178,7 +178,6 @@ impl PageTable {
         paddr.slice_mut_with_len::<PageTableEntry>(PTE_NUM_IN_PAGE)
     } 
  
-            // loongarch64 架构相关代码
                 /// Find PageTableEntry by VirtPageNum, create a frame for a 4KB page table if not exist
                 fn find_pte_create(&mut self, vpn: VirtPageNum) -> Option<&mut PageTableEntry> {
                     let mut pte_list = Self::get_pte_list(self.root_ppn.into());
@@ -207,6 +206,7 @@ impl PageTable {
                     }
                     // level 1, map page
                    Some(&mut pte_list[vpn.pn_index(0)] )
+                   
                 }
                 pub fn find_pte(&self, vpn: VirtPageNum) -> Option<&mut PageTableEntry> {
                     let mut pte_list = Self::get_pte_list(self.root_ppn.into());

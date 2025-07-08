@@ -15,7 +15,7 @@ impl<T> PerCPU<T> {
     #[inline(always)]
     pub fn get_mut_ptr(&self) -> *mut T {
         let percpu_base = get_percpu_ptr();
-        (self.0 as usize + percpu_base - __start_percpu as usize) as _
+        (self.0 as usize  - __start_percpu as usize+ percpu_base) as _
     }
     #[inline(always)]
     pub fn ref_mut(&self) -> &mut T {

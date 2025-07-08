@@ -84,15 +84,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
-name = "bare-metal"
-version = "0.2.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5deb64efa5bd81e31fcd1938615a6d98c82eafcbcd787162b6f63b91d6bac5b3"
-dependencies = [
- "rustc_version",
-]
-
-[[package]]
 name = "bindgen"
 version = "0.71.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -518,10 +509,12 @@ dependencies = [
  "log",
  "loongArch64",
  "lwext4_rust",
+ "ns16550a",
  "num_enum",
  "polyhal",
  "polyhal-boot",
- "riscv 0.6.0",
+ "riscv",
+ "sbi-rt",
  "spin 0.9.8",
  "virtio-drivers",
  "xmas-elf",
@@ -548,8 +541,6 @@ checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
 [[package]]
 name = "polyhal"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "385f80f996f5341d96d5833d456f452480f90ad5e208efe9325b965e5785bc7f"
 dependencies = [
  "aarch64-cpu",
  "acpi",
@@ -567,7 +558,7 @@ dependencies = [
  "ns16550a",
  "polyhal-macro",
  "raw-cpuid 11.5.0",
- "riscv 0.13.0",
+ "riscv",
  "sbi-rt",
  "spin 0.10.0",
  "tock-registers",
@@ -580,8 +571,6 @@ dependencies = [
 [[package]]
 name = "polyhal-boot"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fc167008a7396cb78e43ea644e9cd300dde6a456bb8ac941fb459bf2cb82c669"
 dependencies = [
  "aarch64-cpu",
  "cfg-if",
@@ -589,7 +578,7 @@ dependencies = [
  "multiboot",
  "polyhal",
  "raw-cpuid 11.5.0",
- "riscv 0.13.0",
+ "riscv",
  "tock-registers",
  "x86",
  "x86_64",
@@ -693,17 +682,6 @@ checksum = "2b15c43186be67a4fd63bee50d0303afffcef381492ebe2c5d87f324e1b8815c"
 
 [[package]]
 name = "riscv"
-version = "0.6.0"
-dependencies = [
- "bare-metal",
- "bit_field",
- "bitflags 1.3.2",
- "log",
- "riscv-target",
-]
-
-[[package]]
-name = "riscv"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "afa3cdbeccae4359f6839a00e8b77e5736caa200ba216caf38d24e4c16e2b586"
@@ -733,29 +711,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8188909339ccc0c68cfb5a04648313f09621e8b87dc03095454f1a11f6c5d436"
 
 [[package]]
-name = "riscv-target"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "88aa938cda42a0cf62a20cfe8d139ff1af20c2e681212b5b34adb5a58333f222"
-dependencies = [
- "lazy_static",
- "regex",
-]
-
-[[package]]
 name = "rustc-hash"
 version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "357703d41365b4b27c590e3ed91eabb1b663f07c4c084095e60cbed4362dff0d"
-
-[[package]]
-name = "rustc_version"
-version = "0.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "138e3e0acb6c9fb258b19b67cb8abd63c00679d2851805ea151465464fe9030a"
-dependencies = [
- "semver",
-]
 
 [[package]]
 name = "rustversion"
@@ -786,21 +745,6 @@ name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
-
-[[package]]
-name = "semver"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d7eb9ef2c18661902cc47e535f9bc51b78acd254da71d375c2f6720d9a40403"
-dependencies = [
- "semver-parser",
-]
-
-[[package]]
-name = "semver-parser"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "388a1df253eca08550bef6c72392cfe7c30914bf41df5269b68cbd6ff8f570a3"
 
 [[package]]
 name = "shlex"
