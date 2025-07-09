@@ -8,17 +8,18 @@ fn main() -> Result<()> {
 fn gen_linker_script() -> Result<()> {
     let arch = env::var("CARGO_CFG_TARGET_ARCH").expect("can't find target");
     let fname = format!("linker_{}.lds", arch);
-    let (output_arch, kernel_base) = if arch.contains("riscv64") {
-        ("riscv", "0xffffffc080200000")
+    let (output_arch, kernel_base,text_offset) = if arch.contains("riscv64") {
+        ("riscv", "0xffffffc080200000","AT(0x80200000)")
     } else if arch.contains("loongarch64") {
-        ("loongarch64", "0x9000000080000000")
+        ("loongarch64", "0x9000000080000000","")
     } else {
-        (arch.as_str(), "0")
+        (arch.as_str(), "0","")
     };
     
     let ld_content = std::fs::read_to_string("linker.lds")?;
     let ld_content = ld_content.replace("%ARCH%", output_arch);
     let ld_content = ld_content.replace("%KERNEL_BASE%", kernel_base);
+    let ld_content = ld_content.replace("%OFFSET%", text_offset);
 
     // 将生成的链接脚本写入 src 目录
     let output_path = format!("src/{}", fname);

@@ -1,6 +1,6 @@
 
 
-ARCH ?= riscv64
+ARCH ?= loongarch64
 
 
 MODE ?= debug
@@ -62,17 +62,21 @@ QEMU_EXEC := qemu-system-loongarch64 \
 	-smp 1 \
 	-drive file=sdcard-la.img,if=none,format=raw,id=x0 \
 	-device virtio-blk-pci,drive=x0 \
+	-drive file=../disk-la.img,if=none,format=raw,id=x1 \
+	-device virtio-blk-pci,drive=x1 \
 	-no-reboot \
 	-device virtio-net-pci,netdev=net0 \
 	-netdev user,id=net0 \
 	-rtc base=utc
-QEMU_EXEC := qemu-system-loongarch64 \
+QEMU_EXEC_GDB := qemu-system-loongarch64 \
 	-kernel $(KERNEL_ELF) \
 	-m 1G \
 	-nographic \
 	-smp 1 \
 	-drive file=sdcard-la.img,if=none,format=raw,id=x0 \
 	-device virtio-blk-pci,drive=x0 \
+	-drive file=../disk-la.img,if=none,format=raw,id=x1 \
+	-device virtio-blk-pci,drive=x1 \
 	-no-reboot \
 	-device virtio-net-pci,netdev=net0 \
 	-netdev user,id=net0 \
@@ -99,15 +103,6 @@ BOOTLOADER := ../bootloader/$(SBI)-$(BOARD).bin
 KERNEL_ENTRY_PA := 0x80200000
 
 
-
-# GDB Dashboard 支持
-ifeq ($(shell which riscv64-unknown-elf-gdb),)
-GDB_PATH := gdb
-else
-GDB_PATH := riscv64-unknown-elf-gdb
-endif
-
-gdb := $(GDB_PATH)
 
 # Building mode argument
 ifeq ($(MODE), release)
@@ -149,9 +144,23 @@ gdbserver: build
 	 $(QEMU_EXEC_GDB)
 		
 
+ifeq ($(ARCH), riscv64)
+GDB_PATH := riscv64-unknown-elf-gdb
 
+gdb := $(GDB_PATH)
+
+
+gdbclient:
+	@$(gdb) -ex 'file $(KERNEL_ELF)' -ex 'set arch riscv64' -ex 'target remote localhost:1234'
+
+else ifeq ($(ARCH), loongarch64)
+GDB_PATH := riscv64-unknown-elf-gdb
+gdb := $(GDB_PATH)
 gdbclient:
 	@$(gdb) -ex 'file $(KERNEL_ELF)' -ex 'set arch Loongarch64' -ex 'target remote localhost:1234'
 
+else
+$(error Unsupported ARCH: $(ARCH))
+endif
 
 .PHONY: build env kernel clean disasm disasm-vim run-inner fs-img gdbserver gdbclient

@@ -11,7 +11,7 @@ SECTIONS
     _skernel = .;
      skernel = .;
     /* 代码段 */
-      .text ALIGN(4K) : AT(0x80200000) {
+      .text ALIGN(4K) : %OFFSET% {
         *(.multiboot .multiboot.*)
          stext = .;
         *(.text.entry)

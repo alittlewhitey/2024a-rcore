@@ -25,7 +25,7 @@
 #![feature(linked_list_retain)]
 #![feature(linked_list_cursors)]
 #![feature(used_with_arg)]
-#![feature(riscv_ext_intrinsics)]
+#![cfg_attr(target_arch = "riscv64", feature(riscv_ext_intrinsics))]
 #[macro_use]
 extern crate bitflags;
 #[macro_use]
