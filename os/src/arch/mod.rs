@@ -4,7 +4,9 @@ cfg_if::cfg_if! {
         pub use riscv64::*;
         pub use riscv64::trap::RiscV64Trap as CurrentTrap;
         pub type Exception = riscv::interrupt::supervisor::Exception;
-
+        pub fn root_page_addr()->usize{
+         0
+        }
         pub type Interrupt = riscv::interrupt::supervisor::Interrupt;
     } else if #[cfg(target_arch = "loongarch64")] {
         mod loongarch64;
@@ -12,6 +14,9 @@ cfg_if::cfg_if! {
         pub use loongarch64::trap::LoongArch64Trap as CurrentTrap;     
         pub type Exception = loongArch64::register::estat::Exception;
         pub type Interrupt = loongArch64::register::estat::Interrupt;
+         pub fn root_page_addr()->usize{
+          loongArch64::register::pgdl::read().raw()
+        }
     } else {
         compile_error!("Unsupported target architecture");
     }

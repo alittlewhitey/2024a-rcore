@@ -145,7 +145,7 @@ gdbserver: build
 		
 
 ifeq ($(ARCH), riscv64)
-GDB_PATH := riscv64-unknown-elf-gdb
+GDB_PATH := /usr/local/bin/riscv64-unknown-elf-gdb
 
 gdb := $(GDB_PATH)
 
@@ -154,7 +154,7 @@ gdbclient:
 	@$(gdb) -ex 'file $(KERNEL_ELF)' -ex 'set arch riscv64' -ex 'target remote localhost:1234'
 
 else ifeq ($(ARCH), loongarch64)
-GDB_PATH := riscv64-unknown-elf-gdb
+GDB_PATH := /opt/gdb-loongarch64/bin/loongarch64-linux-gnu-gdb
 gdb := $(GDB_PATH)
 gdbclient:
 	@$(gdb) -ex 'file $(KERNEL_ELF)' -ex 'set arch Loongarch64' -ex 'target remote localhost:1234'

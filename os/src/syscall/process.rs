@@ -852,7 +852,10 @@ pub async fn sys_mmap(
     // 8. 按 MAP_FIXED / MAP_FIXED_NOREPLACE / hint / 自动选择地址
     let base = if flags.contains(MmapFlags::MAP_FIXED) {
         // 8.1 强制定位：先 munmap 冲突区
-
+        if range.start.0<current_process().program_brk(){
+            return Err(SysErrNo::EEXIST)
+        }
+        
         if ms.areatree.is_overlap(&range) {
             ms.munmap(vpn, end_vpn);
         }

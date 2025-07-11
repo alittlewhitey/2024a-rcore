@@ -151,13 +151,14 @@ fn log_page_fault_error(scause: Scause, stval: usize, sepc: usize) {
 pub async fn user_task_top() -> i32 {
     loop {
 
-        debug!("into user_task_top");
         let curr = current_task();
         // let VA:usize=0x150001579c;
         // unsafe { read_volatile(VA as *const u8) };
 
         let mut syscall_ret = None;
         let tf = curr.get_trap_cx().unwrap();
+
+        debug!("into user_task_top sepc:{:#x},satp:{:#x}",tf.sepc,crate::arch::root_page_addr());
         // debug!("trap_:{:?}",tf);
         if tf.trap_status == TrapStatus::Blocked {
             let scause = scause::read();
@@ -232,7 +233,8 @@ pub async fn user_task_top() -> i32 {
                 Trap::Exception(Exception::StorePageFault)
                 | Trap::Exception(Exception::PageModifyFault) |
                 Trap::Exception(Exception::LoadPageFault)
-        | Trap::Exception(Exception::PageNonReadableFault)=>
+        | Trap::Exception(Exception::PageNonReadableFault)
+         | Trap::Exception(Exception::FetchPageFault)=>
                  {
                     //懒分配
                     // println!(
@@ -288,7 +290,7 @@ pub async fn user_task_top() -> i32 {
                      cx.sepc += 2;
                 }
                 Trap::Exception(Exception::PageNonExecutableFault)
-                | Trap::Exception(Exception::FetchPageFault) =>{
+                =>{
                     println!("[kernel] Illegal instruction exception in application (sepc={:#x}). Probably from abort(). Terminating process.", tf.sepc);
 
                     exit_current(-2).await;

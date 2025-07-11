@@ -2,7 +2,7 @@
 use crate::config::{ DL_INTERP_OFFSET, KERNEL_DIRECT_OFFSET, MMAP_PGNUM_TOP, PAGE_SIZE_BITS};
 use crate::fs::{map_dynamic_link_file, open_file, File, OpenFlags, NONE_MODE};
 use crate::mm::shm::SHM_MANAGER;
-use crate::mm::{ area, translated_byte_buffer, FrameTracker, UserBuffer, VPNRange, KERNEL_PAGE_TABLE_TOKEN};
+use crate::mm::{ area, flush_tlb, translated_byte_buffer, FrameTracker, UserBuffer, VPNRange, KERNEL_PAGE_TABLE_TOKEN};
 use crate::syscall::flags::MremapFlags;
 use crate::task::auxv::{Aux, AuxType};
 use crate::task::current_process;
@@ -1028,13 +1028,15 @@ if area.vpn_range.contains(vpn) {
         }
 
         // 最后刷新 TLB
-        flush_all();
+        flush_tlb(va.0);
         trace!(
             "page alloc success area:{:#x}-{:#x}  addr:{:#x}",
             area.vpn_range.get_start().0,
             area.vpn_range.get_end().0,
             stval
         );
+
+    // areatree.debug_print();
         return Ok(true)
     } else {
         // 4. 虚拟页号在映射区外 → VpnNotHandled

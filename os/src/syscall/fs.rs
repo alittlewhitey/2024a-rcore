@@ -55,7 +55,7 @@ pub async fn sys_write(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
     match &fd_table.table[fd] {
         Some(file) => {
             // 2. 检查是否可写
-            if !file.any().writable().map_err(|_| SysErrNo::EIO)? {
+            if !file.any().writable()? {
                 return Err(SysErrNo::EBADF);
             }
             let file = file.clone();
@@ -64,7 +64,7 @@ pub async fn sys_write(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
                 .any()
                 .write(UserBuffer::new(translated_byte_buffer(token, buf, len)))
                 .await
-                .map_err(|_| SysErrNo::EIO)?;
+                ?;
             Ok(bytes)
         }
         None => Err(SysErrNo::EBADF),
@@ -98,7 +98,7 @@ pub async fn sys_read(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
                 .any()
                 .read(UserBuffer::new(translated_byte_buffer(token, buf, len)))
                 .await
-                .map_err(|_| SysErrNo::EIO)?;
+                ?;
             Ok(bytes)
         }
         None => Err(SysErrNo::EBADF),

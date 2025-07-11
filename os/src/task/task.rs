@@ -788,8 +788,8 @@ impl ProcessControlBlock {
         // 若包含CLONE_CHILD_SETTID或者CLONE_CHILD_CLEARTID
         // 则需要把线程号写入到子线程地址空间中tid对应的地址中
         
-        let (child_tid,need_clear_tid) = if flags.contains(CloneFlags::CLONE_CHILD_SETTID)
-            || flags.contains(CloneFlags::CLONE_CHILD_CLEARTID)
+        let (child_tid,need_clear_tid) = if (flags.contains(CloneFlags::CLONE_CHILD_SETTID)
+            || flags.contains(CloneFlags::CLONE_CHILD_CLEARTID))&&ctid!=0
         {
             
 
@@ -811,7 +811,7 @@ impl ProcessControlBlock {
             child_tid,
             need_clear_tid,
         )));
-        if flags.contains(CloneFlags::CLONE_PARENT_SETTID) {
+        if flags.contains(CloneFlags::CLONE_PARENT_SETTID)&&ptid!=0 {
             self.manual_alloc_type_for_lazy(ptid as *const u32).await?;
             let parent_token = self.memory_set.lock().await.token();
             *translated_refmut(parent_token, ptid as *mut u32)? = tcb.id.0 as u32;
@@ -915,7 +915,7 @@ impl ProcessControlBlock {
                 );
             }
         }
-        if flags.contains(CloneFlags::CLONE_CHILD_SETTID) {
+        if flags.contains(CloneFlags::CLONE_CHILD_SETTID)&&ctid!=0 {
             *translated_refmut(clone_token, ctid as *mut u32)? =  tcb.id() as u32;
         }
         add_task(tcb.clone());
