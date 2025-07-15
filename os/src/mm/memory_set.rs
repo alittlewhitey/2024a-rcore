@@ -954,7 +954,7 @@ pub async fn handle_page_fault(
     let start = self.areatree.find_area(vpn);
 
     // self.areatree.debug_print();
-    info!("[mmap_page_fault] handle page fault at va:{:#x},vpn:{:#x},start_vpn:{:#x},is_write:{:#?}", fault_va.0, vpn.0, start.map_or(0, |v| v.0),is_write);
+    trace!("[mmap_page_fault] handle page fault at va:{:#x},vpn:{:#x},start_vpn:{:#x},is_write:{:#?}", fault_va.0, vpn.0, start.map_or(0, |v| v.0),is_write);
     // 1. 找不到映射区 → AreaNotFound
     let start_vpn = if let Some(v) = start {
         v
@@ -988,7 +988,7 @@ pub async fn handle_page_fault(
 
     // 4. 如果 vpn 在范围内，则进行懒分配处理
 if area.vpn_range.contains(vpn) {
-    info!("[mmap_page_fault] lazy allocate page for vpn");
+    trace!("[mmap_page_fault] lazy allocate page for vpn");
         // 映射一个页（lazy allocate）
         area.map_one(page_table, vpn).expect("no memery ");
 
@@ -1022,7 +1022,7 @@ if area.vpn_range.contains(vpn) {
 
         // 最后刷新 TLB
         flush_tlb(va.0);
-        info!(
+        trace!(
             "page alloc success area:{:#x}-{:#x}  addr:{:#x}",
             area.vpn_range.get_start().0,
             area.vpn_range.get_end().0,
@@ -1042,7 +1042,7 @@ if area.vpn_range.contains(vpn) {
     if let Some(pte) =  page_table.find_pte(vpn){
       match pte.is_cow()&&is_write{
             true=>{
-            info!("pte.flags(): {:?}", pte.flags());
+                trace!("pte.flags(): {:?}", pte.flags());
 
             if !pte.is_write_back(){
                 area.debug_print();
@@ -1050,7 +1050,7 @@ if area.vpn_range.contains(vpn) {
             }
              let ref_count=Arc::strong_count( area.data_frames.get(&vpn).expect("cow page should have frame"));
    if ref_count > 1 {
-    info!("[mmap_page_fault] cow allocate page for vpn,pte:{:#? }",pte.flags());
+    trace!("[mmap_page_fault] cow allocate page for vpn,pte:{:#? }",pte.flags());
 
     let src = &mut page_table.translate(vpn).unwrap().ppn().get_bytes_array()[..PAGE_SIZE];
     area.unmap_one(page_table, vpn);
@@ -1071,7 +1071,7 @@ if area.vpn_range.contains(vpn) {
     } else {
         // 如果引用计数为1，说明是私有页，不需要COW
 
-    info!("[mmap_page_fault] cow not allocate page for vpn,pte:{:#? }",pte.flags());
+        trace!("[mmap_page_fault] cow not allocate page for vpn,pte:{:#? }",pte.flags());
     pte.un_cow();
 
         flush_all();
