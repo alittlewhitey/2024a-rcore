@@ -10,7 +10,7 @@ use spin::mutex::Mutex;
 use lazy_init::LazyInit;
 
 use crate::timer::{TimeVal, current_time}; // 假设 TimeVal 可比较, Ord
-use crate::task::{Task, TaskStatus, TaskRef, TID2TC};
+use crate::task::{current_task, Task, TaskRef, TaskStatus, TID2TC};
 use crate::task::waker::waker_from_task;
 use super::current_task_id;
 use super::schedule::remove_task; // 假设 current_task_id() -> usize
@@ -153,20 +153,33 @@ pub fn sleep_until(deadline: Option<TimeVal>) -> SleepFuture {
         registered_node_arc: None,
     }
 }
+#[derive(Debug,Clone, Copy)]
+pub enum WakeReason {
+    Timeout,
+    Interrupted,
+    TaskNotExist,
+    SignalInterrupted,
+    None,
+}
 
 /// 5. SleepFuture 实现
 pub struct SleepFuture {
     pub deadline: Option<TimeVal>, // 改为 Option
     task_id_at_creation: usize,
     registered_node_arc: Option<Arc<SleepNode>>,
+    
 }
 
 impl Future for SleepFuture {
-    type Output = ();
+    type Output = WakeReason;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut_self = self.get_mut();
 
+        let task = current_task();
+        let mut wakereason = task.sleep_reason.lock();
+            let wakerea = wakereason.clone();
+            *wakereason = WakeReason::None;
         
         if let Some(deadline_val) = mut_self.deadline {
             // 如果有截止时间，检查是否已到期
@@ -174,7 +187,7 @@ impl Future for SleepFuture {
                 if let Some(node_arc) = mut_self.registered_node_arc.take() {
                     GLOBAL_SLEEPER_QUEUE.lock().remove_sleeper(&node_arc);
                 }
-                return Poll::Ready(());
+                return Poll::Ready(WakeReason::Timeout);
             }
         }
         // 如果 deadline 是 None，则永不因时间到期，只有 Waker 被调用时才会 Ready
@@ -185,7 +198,9 @@ impl Future for SleepFuture {
             if let Some(node_arc) = mut_self.registered_node_arc.take() {
                 GLOBAL_SLEEPER_QUEUE.lock().remove_sleeper(&node_arc);
             }
-            return Poll::Ready(());
+           
+            drop(wakereason);
+            return Poll::Ready(wakerea);
         }
 
         // 未到期 (如果 deadline 是 Some) 或永不超时 (deadline 是 None)，且尚未注册
@@ -195,7 +210,7 @@ impl Future for SleepFuture {
             let tid2tc_map = TID2TC.lock();
             match tid2tc_map.get(&task_id_for_node) {
                 Some(task_ref) => task_ref.clone(),
-                None => return Poll::Ready(()), // 任务不存在
+                None => return Poll::Ready(WakeReason::TaskNotExist), // 任务不存在
             }
         };
         task_arc_for_waker_and_state.set_state(TaskStatus::Blocking);

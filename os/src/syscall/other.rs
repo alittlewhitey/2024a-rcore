@@ -2,7 +2,7 @@ use linux_raw_sys::general::{CLOCK_MONOTONIC, CLOCK_REALTIME, MAX_CLOCKS};
 use alloc::{string::String, vec};
 #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
 use riscv::register::time;
-use crate::{config::{MAX_KERNEL_RW_BUFFER_SIZE, TOTALMEM}, fs::{open_file, OpenFlags, NONE_MODE}, mm::{fill_str, get_target_ref, page_table::get_data, put_data, translated_byte_buffer, translated_refmut, translated_str, UserBuffer}, syscall::flags::{Sysinfo, Utsname}, task::{current_process, current_task, current_token, sleeplist::sleep_until, task_count, PID2PC}, timer::{self, current_time, get_time_ms, get_usertime, usertime2_timeval, TimeVal, Tms, UserTimeSpec}, utils::error::{SysErrNo,  SyscallRet}};
+use crate::{config::{MAX_KERNEL_RW_BUFFER_SIZE, TOTALMEM}, fs::{open_file, OpenFlags, NONE_MODE}, mm::{fill_str, get_target_ref, page_table::get_data, put_data, translated_byte_buffer, translated_refmut, translated_str, UserBuffer}, signal::handle_pending_signals, syscall::flags::{Sysinfo, Utsname}, task::{current_process, current_task, current_token, sleeplist::sleep_until, task_count, PID2PC}, timer::{self, current_time, get_time_ms, get_usertime, usertime2_timeval, TimeVal, Tms, UserTimeSpec}, utils::error::{SysErrNo,  SyscallRet}};
 
 pub async  fn sys_sysinfo(info: *const u8) -> SyscallRet {
 
@@ -73,6 +73,9 @@ pub async fn sys_nanosleep(req: *const UserTimeSpec, rem: *mut UserTimeSpec) -> 
 info!(
         "[sys_nanosleep]: req:{:?},rem:{:?}",req,rem
     );
+    if handle_pending_signals(Some(0)).await{
+        return Err(SysErrNo::ERESTART)
+     }
     let proc = current_process();
     let token = proc.get_user_token().await;
     if proc.manual_alloc_type_for_lazy(req).await.is_err() {
@@ -126,6 +129,9 @@ pub async fn sys_clock_nanosleep(
         req,
         rem
     );
+    if handle_pending_signals(Some(0)).await{
+        return Err(SysErrNo::ERESTART)
+    }
     const TIMER_ABSTIME: usize = 1;
     // if clock_id >= MAX_CLOCKS as usize {
     //     return Err(SysErrNo::EINVAL);

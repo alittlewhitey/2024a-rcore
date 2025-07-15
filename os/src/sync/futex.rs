@@ -11,10 +11,10 @@ use spin::mutex::Mutex as SpinMutex;
 use crate::mm::get_target_ref;
 use crate::task::waker::waker_from_task;
 // 你的模块依赖
-use crate::task::{current_task_id, TaskStatus, TID2TC};
+use crate::task::{current_task, current_task_id, TaskStatus, TID2TC};
 use crate::timer::{current_time, TimeVal, UserTimeSpec};
 
-use crate::task::sleeplist::{sleep_until, SleepFuture};
+use crate::task::sleeplist::{sleep_until, SleepFuture, WakeReason};
 use crate::utils::error::SysErrNo;
 
 // --- FutexWaiterNode (专为 Futex 设计) ---
@@ -177,47 +177,36 @@ impl Future for FutexWaitInternalFuture {
                 }
             };
 
-        info!("poll futex future1");
-        // 检查是否之前已经注册过 Waker 并且现在被 poll
-        // 这通常意味着是被 FUTEX_WAKE 唤醒了 (或者是一个超时唤醒后，SleepFuture 的 Ready 导致这里重 poll,或者是被信号打断)
-        if current_val_in_user != this.expected_val {
-            if this.registered_node_arc.is_some() {
-                // 如果是被唤醒，我们不再重新检查用户空间的 futex 值。
-                // 假设唤醒是有效的，FutexWaitInternalFuture 完成。
-                // 用户空间代码在 sys_futex 返回后会自己重新检查和竞争锁。
-                // 清理在全局队列中的注册。
-                info!("tid{}  futex is finish",current_task_id());
-                this.cleanup_registration_from_futex_queue();
-                return Poll::Ready(Ok(())); // <--- 被唤醒，返回成功
-            }
-        }
 
-        info!("poll futex future2");
-        if current_val_in_user != this.expected_val {
-            // this.cleanup_registration_from_futex_queue(); // 此时尚未注册
-            return Poll::Ready(Err(SysErrNo::EAGAIN)); // 值不匹配，不等待
-        }
+
+        
 
         // 2. 检查超时 (如果设置了)
         if let Some(sleep_future) = &mut this.timeout_sleep {
             let mut pinned_sleep = unsafe { Pin::new_unchecked(sleep_future) };
-            if let Poll::Ready(()) = pinned_sleep.as_mut().poll(cx) {
+            if let Poll::Ready(res) = pinned_sleep.as_mut().poll(cx) {
                 // 超时发生。注意：此时 Waker 可能还未在 futex 队列注册，
                 // 或者即使注册了，超时优先。
                 // cleanup_registration_from_futex_queue 会处理 registered_node_arc 是 None 的情况。
                 this.cleanup_registration_from_futex_queue();
                 info!("poll futex is timeout");
-                return Poll::Ready(Err(SysErrNo::ETIMEDOUT));
+                match res{
+                    WakeReason::Timeout=>
+                return Poll::Ready(Err(SysErrNo::ETIMEDOUT)),
+                    WakeReason::None=>
+
+                return Poll::Ready(Ok(())),
+
+                    WakeReason::SignalInterrupted=>
+                return Poll::Ready(Err(SysErrNo::ERESTART)),
+                    _=> unreachable!()
+                }
             }
-            // 如果 sleep_future 返回 Pending，cx.waker() 已被 SleeperList 注册
-            // 这意味着 cx.waker() (即 FutexWaitInternalFuture 的 Waker)
-            // 既可能被超时唤醒，也可能被 FUTEX_WAKE 唤醒。
-            // 我们上面的第一个 if this.registered_node_arc.is_some() 会处理被WAKE的情况。
+            // 如果 sleep_future 返回 Pending，意味着第一次poll这个future
         }
 
-        // 3. 如果执行到这里，意味着：
-        //    a. Futex 值与期望值匹配。
-        //    b. 未超时 (或者超时 Future 返回了 Pending)。
+        // 3. 如果执行到这里，意味着第一次poll
+        
 
         info!("poll futex future3");
         if this.registered_node_arc.is_none() {
@@ -251,13 +240,17 @@ impl Future for FutexWaitInternalFuture {
             ;
             drop(task_ref_for_status_change);
             info!("Futex Pending in init");
-            Poll::Pending // 等待被 FUTEX_WAKE 或超时唤醒
+            Poll::Pending // 等待被 FUTEX_WAKE 
         } else {
-            //说明被中断
-            
-        info!("poll futex is EINTR");
-            // bpoint();
-            return Poll::Ready(Err(SysErrNo::ERESTART));
+            //无sleeputile
+                let reason = current_task().sleep_reason.lock().clone();
+                current_task().set_sleep_reason(WakeReason::None);
+                match reason {
+                    WakeReason::None=> 
+                return Poll::Ready(Ok(())),
+                    WakeReason::SignalInterrupted=> return Poll::Ready(Err(SysErrNo::ERESTART)),
+                    _=>unreachable!()
+                }
         }
     }
 }

@@ -51,17 +51,25 @@ mod loongarch_platform {
 
     use polyhal::VirtAddr;
 
-    use crate::config::KERNEL_DIRECT_OFFSET;
+    use crate::{config::KERNEL_DIRECT_OFFSET, timer::get_time_ticks};
 
-    pub fn set_timer(timer: usize) {
-        unsafe {
-            // LoongArch64 定时器设置
-            asm!(
-                "csrwr {0}, 0x41",  // TCFG 寄存器
-                in(reg) timer,
-            );
-        }
+   /// Set the next timer
+///
+/// # parameters
+///
+/// - next [usize] next time from system boot#[inline]
+pub fn set_timer(next: usize) {
+    let curr = get_time_ticks();
+    if next < curr {
+        return;
     }
+    let interval = next - curr;
+    loongArch64::register::tcfg::set_init_val(
+        next
+        );
+    loongArch64::register::tcfg::set_en(true);
+}
+
 
     pub fn console_putchar(c: usize) {
         unsafe {

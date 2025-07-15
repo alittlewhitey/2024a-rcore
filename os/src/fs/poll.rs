@@ -12,7 +12,7 @@ use crate::mm::page_table::{copy_from_user_array, copy_to_user_bytes_exact}; // 
 use crate::mm::{VirtAddr, TranslateError};
 use crate::utils::error::{SysErrNo, SyscallRet};
 use crate::timer::{TimeVal, current_time};
-use crate::task::sleeplist::{sleep_until, SleepFuture};
+use crate::task::sleeplist::{sleep_until, SleepFuture, WakeReason};
 
 
 /// 内核中表示一个 poll 请求的结构
@@ -109,7 +109,7 @@ impl Future for PollFuture {
         for request in this.requests.iter() {
             let mut calculated_revents = PollEvents::empty();
             if request.original_user_fd < 0 {
-                calculated_revents = PollEvents::empty();
+                calculated_revents.insert(PollEvents::POLLNVAL);
             } else if let Some(fd_val) = &request.file_descriptor {
                 info!("Polling fd_val: {:?}, requested_events: {:?}", fd_val, request.requested_events);
                 calculated_revents = fd_val.poll(request.requested_events, cx.waker());
@@ -137,24 +137,32 @@ impl Future for PollFuture {
             let mut pinned_sleep = Pin::new(sleep_future_instance); // pinned_sleep is Pin<&mut SleepFuture>
 
             match pinned_sleep.as_mut().poll(cx) { // pinned_sleep.as_mut() 返回 Pin<&mut SleepFuture>
-                Poll::Ready(()) => { // 超时或被唤醒
+                Poll::Ready(f) => { // 超时或被唤醒
                     // 通过 pinned_sleep (Pin<&mut SleepFuture>) 访问 deadline
                     // Pin<&mut T> (where T: Unpin) Derefs to T, so we can access fields directly.
-                    let is_actual_timeout = pinned_sleep.deadline.is_some() && // <--- 使用 pinned_sleep
-                                            current_time() >= pinned_sleep.deadline.unwrap(); // <--- 使用 pinned_sleep
+                    
 
-                    if is_actual_timeout {
-                        match unsafe { this.write_revents_to_user(&current_results) } {
-                            Ok(()) => return Poll::Ready(Ok(0)),
-                            Err(e) => return Poll::Ready(Err(e)),
+                    match f {
+                        WakeReason::None => {
+                            unreachable!();
+                            // match unsafe { this.write_revents_to_user(&current_results) } {
+                            //     Ok(()) => return Poll::Ready(Ok(0)),
+                            //     Err(e) => return Poll::Ready(Err(e)),
+                            // }
+
                         }
-                    } else {
-                        // 不是实际时间超时
-
+                        WakeReason::SignalInterrupted => {
+                            // 不是实际时间超时
                             info!("Poll pending Not timeout");
-                        return Poll::Pending;
+                            return Poll::Ready(Err(SysErrNo::ERESTART));
+                        }
+                        WakeReason::Timeout => {
+                            return Poll::Ready(Ok(0));
+                        }
+                        _=> unreachable!(),
                     }
                 }
+
                 Poll::Pending => {
                     //让权
 
@@ -170,7 +178,7 @@ impl Future for PollFuture {
                  }
             }
 
-                   info!("Poll pending yield now  infinity timeout");
+                   info!("Poll ready now");
             return Poll::Pending;
         }
     }

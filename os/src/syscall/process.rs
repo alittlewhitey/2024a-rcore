@@ -13,8 +13,8 @@ use spin::Lazy;
 
 use crate::{
     config::{FD_SETSIZE, MAX_SYSCALL_NUM, MEMORY_END, MMAP_BASE, MMAP_TOP, PAGE_SIZE, PAGE_SIZE_BITS}, fs::{open_file, select::{FdSet, PSelectFuture}, File, FileDescriptor, OpenFlags, NONE_MODE}, mm::{
-        flush_all,  frame_allocator::remaining_frames, get_target_ref, page_table::{copy_to_user_bytes}, put_data, translated_byte_buffer, translated_refmut, translated_str, FrameTracker, MapArea, MapAreaType, MapPermission, MapType, MmapFile, MmapFlags, TranslateError, UserBuffer, VirtAddr, VirtPageNum, MPOL_BIND, MPOL_DEFAULT, MPOL_PREFERRED
-    }, signal::{SigMaskHow, SigSet, Signal, NSIG}, sync::futex::{ FutexKey, FutexWaitInternalFuture, GLOBAL_FUTEX_SYSTEM}, syscall::{flags::{  MmapProt, MremapFlags, WaitFlags, FUTEX_CLOCK_REALTIME, FUTEX_CMP_REQUEUE, FUTEX_OP_ADD, FUTEX_OP_ANDN, FUTEX_OP_CMP_EQ, FUTEX_OP_CMP_GE, FUTEX_OP_CMP_GT, FUTEX_OP_CMP_LE, FUTEX_OP_CMP_LT, FUTEX_OP_CMP_NE, FUTEX_OP_OR, FUTEX_OP_SET, FUTEX_OP_XOR, FUTEX_PRIVATE_FLAG, FUTEX_REQUEUE, FUTEX_WAIT, FUTEX_WAIT_BITSET, FUTEX_WAKE, FUTEX_WAKE_BITSET, FUTEX_WAKE_OP}, process}, task::{
+        flush_all,  frame_allocator::remaining_frames, get_target_ref, page_table::copy_to_user_bytes, put_data, translated_byte_buffer, translated_refmut, translated_str, FrameTracker, MapArea, MapAreaType, MapPermission, MapType, MmapFile, MmapFlags, TranslateError, UserBuffer, VirtAddr, VirtPageNum, MPOL_BIND, MPOL_DEFAULT, MPOL_PREFERRED
+    }, signal::{handle_pending_signals, SigMaskHow, SigSet, Signal, NSIG}, sync::futex::{ FutexKey, FutexWaitInternalFuture, GLOBAL_FUTEX_SYSTEM}, syscall::{flags::{  MmapProt, MremapFlags, WaitFlags, FUTEX_CLOCK_REALTIME, FUTEX_CMP_REQUEUE, FUTEX_OP_ADD, FUTEX_OP_ANDN, FUTEX_OP_CMP_EQ, FUTEX_OP_CMP_GE, FUTEX_OP_CMP_GT, FUTEX_OP_CMP_LE, FUTEX_OP_CMP_LT, FUTEX_OP_CMP_NE, FUTEX_OP_OR, FUTEX_OP_SET, FUTEX_OP_XOR, FUTEX_PRIVATE_FLAG, FUTEX_REQUEUE, FUTEX_WAIT, FUTEX_WAIT_BITSET, FUTEX_WAKE, FUTEX_WAKE_BITSET, FUTEX_WAKE_OP}, process}, task::{
         current_process, current_task, current_task_id, current_token, exit_current, exit_proc, future::{JoinFuture, WaitAnyFuture}, set_priority, yield_now, CloneFlags, ProcessControlBlock,  RobustList, TaskStatus, PID2PC, TID2TC
     }, timer::{ current_time, get_time_ns, get_time_us, get_usertime, usertime2_timeval, TimeVal, UserTimeSpec}, utils::{
          error::{SysErrNo, SyscallRet}, page_round_up, string::get_abs_path
@@ -92,8 +92,17 @@ pub async fn sys_clone(args: [usize; 6]) -> SyscallRet {
     let flags = args[0];
     let user_stack = args[1];
     let ptid = args[2];
-    let tls = args[3];
-    let ctid = args[4];
+    cfg_if::cfg_if! {
+        if #[cfg(target_arch = "riscv64")] {
+            let tls = args[3];
+            let ctid = args[4];
+        } else  if #[cfg(target_arch = "loongarch64")]{
+             let tls = args[4];
+            let ctid = args[3];
+        }
+        
+    }
+   
     let proc = current_process();
 
     let flags =
@@ -1236,7 +1245,9 @@ info!(
         tid,
     );
 
-
+   if handle_pending_signals(Some(0)).await{
+      return Err(SysErrNo::ERESTART)
+   }
     pcb_arc.manual_alloc_type_for_lazy(uaddr_user_ptr  ).await?;
     let token = pcb_arc.memory_set.lock().await.token();
     
@@ -1370,6 +1381,7 @@ info!(
                 }
                 count
             } else { 0 };
+       
        
 
             Ok(woken_count)
@@ -1965,6 +1977,9 @@ pub async fn sys_pselect6(
 ) -> SyscallRet {
     trace!("[sys_pselect6] nfds: {}, readfds: {:p}, writefds: {:p}, exceptfds: {:p}, timeout: {:p}, sigmask: {:p}",
         nfds, readfds_ptr, writefds_ptr, exceptfds_ptr, timeout_ptr, sigmask_ptr);
+    if handle_pending_signals(Some(0)).await{
+            return Err(SysErrNo::ERESTART)
+        }
     if nfds < 0 {
         return Err(SysErrNo::EINVAL);
     }

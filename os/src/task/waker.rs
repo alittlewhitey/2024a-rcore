@@ -64,6 +64,7 @@ pub fn wakeup_task(task_ptr: *const Task) {
             info!("task wakeup   tid:{}",task_ref.id());
              add_task(task_ref);
 
+
         }
         TaskStatus::Waked => panic!("cannot wakeup Waked "),
         // 无法唤醒已经退出的任务

@@ -47,7 +47,7 @@ pub async fn sys_sigaction(
     oldact_user_ptr: *mut SigAction,
 ) -> SyscallRet {
 
-    debug!("[sys_sigaction] signo: {}, act: {:?}, oldact: {:?}", signum_usize, act_user_ptr, oldact_user_ptr);
+    info!("[sys_sigaction] signo: {}, act: {:?}, oldact: {:?}", signum_usize, act_user_ptr, oldact_user_ptr);
     let sig = match Signal::from_usize(signum_usize) {
         Some(s) => s,
         None => return Err(SysErrNo::EINVAL), // 无效信号
@@ -75,9 +75,9 @@ pub async fn sys_sigaction(
         shared_state.sigactions[sig as usize] = *new_action;
         let handler = shared_state.sigactions[sig as usize].handler;
         let flags = shared_state.sigactions[sig as usize].flags;
-        trace!("step 1: sig={:?}", sig as usize);
+        info!("step 1: sig={:?}", sig as usize);
 trace!("step 2: handler={:#x}", handler);
-trace!("step 3: flags={:?}", flags);
+info!("step 3: flags={:?}", flags);
         // 校验 new_action 的合法性 (例如 handler 地址)
         // ...
 

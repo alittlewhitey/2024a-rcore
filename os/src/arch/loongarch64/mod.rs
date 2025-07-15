@@ -46,6 +46,7 @@ impl ArchInit for LoongArch64 {
     }
 }
 
+
 #[no_mangle]
 pub fn setbootsp() -> ! {
     LoongArch64::set_boot_stack();

@@ -39,11 +39,12 @@ pub const SI_SIGIO: i32 = -5; // Queued SIGIO
 pub const SI_TKILL: i32 = -6; // tkill or tgkill
 use crate::config::{SS_DISABLE, USER_SIGNAL_PROTECT};
 use crate::mm::{get_target_ref, put_data, translated_refmut};
-use crate::task::{current_process, current_task, current_task_id, current_token, exit_proc};
+use crate::task::{current_process, current_task, current_task_id, current_token, exit_proc, yield_now};
 use crate::task::{ProcessRef, Task, TaskRef, PID2PC}; // 确保 Task 有 id()
 use crate::trap::{disable_irqs, TrapContext, TrapStatus, UContext};
 use crate::utils::error::SysErrNo;
 use alloc::sync::Arc;
+use alloc::task::Wake;
 pub use sigact::*;
 pub use signal::*; 
 
@@ -92,11 +93,13 @@ pub async fn send_signal(
         task_signal_state.sigpending.add(sig);
         drop(task_signal_state);
         drop(process_signal_state);
-
+        
         // 尝试唤醒目标线程 (如果它可被中断)
         // target_task_arc.try_interrupt_if_blocked();
+        task_arc.set_sleep_reason(crate::task::sleeplist::WakeReason::SignalInterrupted);
         let task_ptr: *const Task = Arc::as_ptr(&task_arc);
-        unsafe { crate::task::waker::wakeup_task(task_ptr) }; // 假设可以安全调用
+        unsafe { crate::task::waker::wakeup_task(task_ptr) }; 
+        
     } else {
         // --- 发送给整个进程 (kill 语义) ---
         let mut process_signal_state = pcb_arc.signal_shared_state.lock();
@@ -125,6 +128,8 @@ pub async fn send_signal(
             // }
             // 简化：尝试唤醒第一个（或主线程）
             // 这里的唤醒是指让调度器有机会运行它，以便它能检查信号
+
+           task_ref.set_sleep_reason(crate::task::sleeplist::WakeReason::SignalInterrupted);
             let task_ptr: *const Task = Arc::as_ptr(task_ref);
             unsafe { crate::task::waker::wakeup_task(task_ptr) };
             break; // 仅唤醒一个
@@ -182,23 +187,29 @@ pub async fn send_signal_to_task(task_arc: &Arc<Task>, sig: Signal) -> Result<()
 
     // 4. 唤醒该任务，让调度器有机会运行它，
     //    以便它在回用户态前调用 handle_pending_signals
+
+    task_arc.set_sleep_reason(crate::task::sleeplist::WakeReason::SignalInterrupted);
     let task_ptr: *const Task = Arc::as_ptr(task_arc);
     info!("[send_signal_to_task] wake by tid:{}", current_task_id());
+
+
     crate::task::waker::wakeup_task(task_ptr);
+    yield_now().await;
 
     Ok(())
 }
-pub async fn handle_pending_signals(res: Option<usize>) {
+pub async fn handle_pending_signals(res: Option<usize>)->bool {
+    let mut has_pending= false;
     let task_arc = current_task();
 
     let pid = task_arc.get_pid();
     let pcb_arc = match task_arc.get_process() {
         Some(o) => o,
-        None => return,
+        None => return false,
     };
 
     if pcb_arc.is_zombie().await || task_arc.is_exited() {
-        return;
+        return false;
     }
     // 1. 获取线程和进程的信号状态锁
     let mut task_state = task_arc.signal_state.lock().await;
@@ -242,6 +253,7 @@ pub async fn handle_pending_signals(res: Option<usize>) {
                 task_arc.id(),
                 pid
             );
+            has_pending=true;
             let action = process_state.sigactions[sig as usize].clone(); // 动作是进程共享的
 
             // 从相应的挂起队列中移除
@@ -253,7 +265,7 @@ pub async fn handle_pending_signals(res: Option<usize>) {
                 // 其他线程不应该再看到这个进程挂起信号（除非是广播信号或特殊情况）。
                 // 我们的模型是，一旦一个线程选中了一个进程信号来传递，就从共享队列移除。
             }
-
+            
             // 特殊处理 SIGKILL 和 SIGSTOP (它们不能被捕获或忽略，动作是固定的)
             if sig == Signal::SIGKILL {
                 exit_proc((128 + sig as usize) as i32).await;
@@ -262,7 +274,7 @@ pub async fn handle_pending_signals(res: Option<usize>) {
                     pid,
                     task_arc.id()
                 );
-                return; // 进程终止，无需继续
+                return true; // 进程终止，无需继续
             }
             if sig == Signal::SIGSTOP {
                 log::info!(
@@ -331,7 +343,7 @@ pub async fn handle_pending_signals(res: Option<usize>) {
                     }
                     if let Some(res) = res {
                         if action.flags.contains(SigActionFlags::SA_RESTART)
-                            && tf.regs.a0 == ERESTART_USIZE&&sig!=Signal::SIGRT2
+                            && tf.regs.a0 == ERESTART_USIZE
                         {
                             tf.trap_status = TrapStatus::Blocked;
 
@@ -339,12 +351,13 @@ pub async fn handle_pending_signals(res: Option<usize>) {
                             tf.set_origin_a0(EINTR_USIZE);
 
                             task_state.is_restart = true;
+                            tf.sepc-=4;
                             info!(
                                 "[handle_signals]syscall will be restarted a0:{:#x}",
                                 tf.regs.a0
                             );
                         } else {
-                            info!("[do_signal] syscall was interrupted res:{:#x}", res);
+                            info!("[do_signal] syscall was interrupted res:{:#x},a0:{:#x}", res,tf.regs.a0);
                             tf.set_arg0(EINTR_USIZE);
                         }
                     }
@@ -408,7 +421,7 @@ pub async fn handle_pending_signals(res: Option<usize>) {
 
                         let ucontext =
                             UContext::new(task_arc.get_trap_cx().unwrap(), original_thread_mask);
-
+                        
                         debug!("[Signal Delivery] Putting UContext at sp: {:#x} ", sp);
                         debug!(
                             "[Signal Delivery] UContext contains pc: {:#x}",
@@ -434,7 +447,7 @@ pub async fn handle_pending_signals(res: Option<usize>) {
                     drop(task_state);
                     drop(task_arc);
                     drop(pcb_arc);
-                    return; // 信号已交付给用户处理程序，本次内核处理结束
+                    return has_pending; // 信号已交付给用户处理程序，本次内核处理结束
                 }
             }
             // 如果执行到这里（例如 SIG_IGN 或某些不终止的 SIG_DFL），重新获取锁并继续循环
@@ -451,6 +464,7 @@ pub async fn handle_pending_signals(res: Option<usize>) {
     drop(process_state);
     drop(pcb_arc);
     // 确保锁在这里被释放
+    has_pending
 }
 
 /// 恢复被信号处理函数打断前的 TrapFrame，准备返回用户态。
@@ -465,7 +479,7 @@ pub async fn load_trap_for_signal() -> bool {
     if let Some(old_trap_frame) = sig_state.last_context.take() {
         // 既然要返回，就清除 sig_info 标志
 
-        unsafe {
+        {
             // 1. 获取当前的中断上下文。对于一个系统调用，它的 `sp` 指向用户栈。
             let now_trap_frame: &mut TrapContext = task.get_trap_cx().unwrap();
             let ucontext_ptr = now_trap_frame.get_sp() as *const UContext;
@@ -489,11 +503,9 @@ pub async fn load_trap_for_signal() -> bool {
                 info!("[sys_sigreturn]info ");
             }
              
-                // info!("[sys_sigreturn]pre sepc:{}, mContext: sepc:{} ",sig_state.now_trap_frame.sepc);
+            // info!("[sys_sigreturn]pre sepc:{}, mContext: sepc:{} ",sig_state.now_trap_frame.sepc);
 
-            if sig_state.is_restart {
-                now_trap_frame.sepc -= 4;
-            }
+       
 
             info!(
                 "[sys_sigreturn]after restore now trap frame sepc:{:#x} mcontext sp:{:#?},a0:{} ",

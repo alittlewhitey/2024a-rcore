@@ -46,7 +46,7 @@ use crate::fs::{File, FileDescriptor, PollEvents};
 use crate::mm::put_data;
 use crate::signal::{SigSet,  SigMaskHow}; // 假设的信号模块
 use crate::task::current_process;
-use crate::task::sleeplist::{sleep_until, SleepFuture};
+use crate::task::sleeplist::{sleep_until, SleepFuture, WakeReason};
 use crate::timer::{get_time, get_time_ns, get_time_us, get_usertime, usertime2_timeval, UserTimeSpec};
 use crate::utils::error::{SysErrNo, SyscallRet};
 use core::future::Future;
@@ -122,12 +122,10 @@ impl Future for PSelectFuture {
         let mut result_exceptfds = FdSet::default();
 
         // 1. 检查所有文件描述符的状态
-        //    file.poll 会在需要时为 I/O 事件注册 waker
         for (fd, file) in &this.fds_to_check {
             let revents = file.poll(PollEvents::all(), cx.waker());
             let mut is_ready_this_fd = false;
 
-            // --- 映射返回的事件 (逻辑与之前相同) ---
             if revents.intersects(PollEvents::POLLIN) && !this.user_readfds.is_null() {
                 result_readfds.set(*fd);
                 is_ready_this_fd = true;
@@ -141,7 +139,6 @@ impl Future for PSelectFuture {
                 is_ready_this_fd = true;
             }
             if revents.intersects(PollEvents::POLLERR | PollEvents::POLLHUP | PollEvents::POLLNVAL) {
-                // 对于错误，pselect/select 在所有三个集合中都报告该 fd
                 if !this.user_readfds.is_null() { result_readfds.set(*fd); }
                 if !this.user_writefds.is_null() { result_writefds.set(*fd); }
                 if !this.user_exceptfds.is_null() { result_exceptfds.set(*fd); }
@@ -153,7 +150,6 @@ impl Future for PSelectFuture {
             }
         }
 
-        // 2. 如果有任何 FD 立即就绪，则返回
         if ready_count > 0 {
             return match this.write_results_to_user(result_readfds, result_writefds, result_exceptfds) {
                 Ok(_) => Poll::Ready(Ok(ready_count)),
@@ -161,34 +157,45 @@ impl Future for PSelectFuture {
             };
         }
 
-        // 3. 如果没有 FD 立即就绪，则检查超时状态 (通过轮询 SleepFuture)
+        // 2. 没有立即就绪的 fd，检查是否超时
         if let Some(sleep_future) = &mut this.timeout_sleep_instance {
-            // Pin 住内部的 SleepFuture 以便轮询它
-            // SleepFuture 内部会负责向定时器注册 waker
             let pinned_sleep = Pin::new(sleep_future);
 
             match pinned_sleep.poll(cx) {
-                Poll::Ready(()) => {
-                    // 超时发生。根据 pselect 规范，清空所有 fd_set 并返回 0
-                    info!("[PSelectFuture Ready]: Timeout expired.");
-                    let zero_fds = FdSet::default();
-                    return match this.write_results_to_user(zero_fds, zero_fds, zero_fds) {
-                        Ok(_) => Poll::Ready(Ok(0)),
-                        Err(e) => Poll::Ready(Err(e)),
-                    };
+                Poll::Ready(reason) => {
+                    match reason {
+                        WakeReason::Timeout => {
+                            info!("[PSelectFuture Ready]: Timeout expired.");
+                            let zero_fds = FdSet::default();
+                            return match this.write_results_to_user(zero_fds, zero_fds, zero_fds) {
+                                Ok(_) => Poll::Ready(Ok(0)),
+                                Err(e) => Poll::Ready(Err(e)),
+                            };
+                        }
+                        WakeReason::SignalInterrupted => {
+                            info!("[PSelectFuture Ready]: Interrupted by signal.");
+                            return Poll::Ready(Err(SysErrNo::ERESTART));
+                        }
+                        WakeReason::None => {
+                            // 理论上不应触发，说明被默认唤醒，保守起见直接返回 Ok(0)
+                            error!("[PSelectFuture Ready]: Spurious wakeup (None).");
+                            let zero_fds = FdSet::default();
+                            return match this.write_results_to_user(zero_fds, zero_fds, zero_fds) {
+                                Ok(_) => Poll::Ready(Ok(0)),
+                                Err(e) => Poll::Ready(Err(e)),
+                            };
+                        }
+                        _ => {
+                            unreachable!("Unexpected WakeReason in PSelectFuture");
+                        }
+                    }
                 }
                 Poll::Pending => {
-                    // 超时未到，SleepFuture 已经注册了 waker。
-                    // 我们什么都不用做，直接落到下面的 Pending 返回即可。
+                    // 继续等待
                 }
             }
         }
 
-        // 4. 如果执行到这里，意味着：
-        //    - 没有 FD 立即就绪。
-        //    - 超时也未到（或等待是无限的）。
-        //    - Waker 已经被正确地注册到了所有相关的 I/O 事件源和定时器上。
-        //    因此，可以安全地返回 Pending。
         info!("[PSelectFuture Pending]: No FDs ready, waiting for events or timeout.");
         Poll::Pending
     }

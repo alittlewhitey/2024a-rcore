@@ -30,7 +30,7 @@ mod schedule;
 mod task;
 pub(crate) mod waker;
 pub mod sleeplist;
-
+pub use processor::KERNEL_SCHEDULER;
 use alloc::boxed::Box;
 // mod timelist;
 use alloc::{format, vec};
@@ -460,10 +460,10 @@ pub fn get_envs() -> Vec<String> {
     let  envs:Vec<String> = vec![
         "SHLVL=1".into(),
         "PWD=/".into(),
-        "GCC_EXEC_PREFIX=/riscv64-linux-musl-native/bin/../lib/gcc/".into(),
-        "COLLECT_GCC=./riscv64-linux-musl-native/bin/riscv64-linux-musl-gcc".into(),
-        "COLLECT_LTO_WRAPPER=/riscv64-linux-musl-native/bin/../libexec/gcc/riscv64-linux-musl/11.2.1/lto-wrapper".into(),
-        "COLLECT_GCC_OPTIONS='-march=rv64gc' '-mabi=lp64d' '-march=rv64imafdc' '-dumpdir' 'a.'".into(),
+        // "GCC_EXEC_PREFIX=/riscv64-linux-musl-native/bin/../lib/gcc/".into(),
+        // "COLLECT_GCC=./riscv64-linux-musl-native/bin/riscv64-linux-musl-gcc".into(),
+        // "COLLECT_LTO_WRAPPER=/riscv64-linux-musl-native/bin/../libexec/gcc/riscv64-linux-musl/11.2.1/lto-wrapper".into(),
+        // "COLLECT_GCC_OPTIONS='-march=rv64gc' '-mabi=lp64d' '-march=rv64imafdc' '-dumpdir' 'a.'".into(),
         "LIBRARY_PATH=/lib/".into(),
         "LD_LIBRARY_PATH=/lib/".into(),
         "LD_DEBUG=files".into(),

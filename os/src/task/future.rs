@@ -36,7 +36,7 @@ impl Future for YieldFuture {
                
                 Poll::Ready(())
             } else {
-                // trace!("yield_now");
+                trace!("yield_now");
                 //第一次执行到这
                 this._has_polled = true;
                 Poll::Pending

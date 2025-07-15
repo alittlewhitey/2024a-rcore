@@ -97,6 +97,7 @@ impl polyhal::common::PageAlloc for PageAllocImpl {
 pub fn main(hart_id:usize) -> ! {
 
     println!("[kernel] Hello, !");
+    
     polyhal::irq::IRQ::int_disable();
     #[cfg(target_arch="loongarch64")]
     println!("dmw1:{:#x},dmw0 :{:#x}",loongArch64::register::dmw1::read().raw(),loongArch64::register::dmw0::read().raw());
@@ -118,7 +119,7 @@ pub fn main(hart_id:usize) -> ! {
     fs::init();
     // fs::list_app();
     
-    task::add_initproc("/", "/musl/busybox",  "sh /initproc.sh");
+    // task::add_initproc("/", "/musl/busybox",  "sh /initproc.sh");
 
     // task::add_initproc("/musl", "/musl/busybox",  "sh /musl/ltp_testcode.sh");
     // task::add_initproc("/", "/musl/busybox",  "sh /write_tmp.sh");
@@ -135,7 +136,7 @@ pub fn main(hart_id:usize) -> ! {
     // task::add_initproc("/glibc", "/glibc/busybox", "sh");
     // task::add_initproc("/musl", "/musl/busybox", "sh run-dynamic.sh");
 
-    //  task::add_initproc("/musl", "/musl/busybox", "sh /musl/run-static.sh");
+     task::add_initproc("/disk", "/musl/busybox", "sh /disk/run-static.sh");
 
     //  task::add_initproc("/musl", "/musl/hackbench", "");
     //  task::add_initproc("/glibc", "/glibc/basic/mmap", "");

@@ -52,6 +52,10 @@ impl PageTableEntry {
     pub fn empty() -> Self {
         PageTableEntry { bits: 0 }
     }
+    pub fn is_write_back(&self)->bool{
+        let flags= self.flags();
+        flags.contains(PTEFlags::W_BACKUP)
+    }
     pub fn address(&self)->PhysAddr{
         PhysAddr::from((self.bits << 2) & 0xFFFF_FFFF_F000)
     }

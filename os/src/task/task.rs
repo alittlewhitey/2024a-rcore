@@ -18,6 +18,7 @@ use crate::task::auxv::{Aux, AuxType};
 use crate::task::kstack::current_stack_top;
 use crate::task::processor::UTRAP_HANDLER;
 use crate::task::schedule::CFSTask;
+use crate::task::sleeplist::WakeReason;
 use crate::task::waker::waker_from_task;
 use crate::task::{add_task, current_task, exit_robust_list_cleanup, Task, PID2PC, TID2TC};
 use crate::timer::{KernelTimer, TimeData, Tms, UserTimeSpec};
@@ -344,11 +345,11 @@ impl ProcessControlBlock {
     
     )).unwrap();
         self.memory_set.lock().await.push_with_given_frames(new_area, &old_area.data_frames,true);
-        // 对每对 (vpn, frame) 做映射并记录
-        for (vpn, _) in old_area.data_frames.iter(){
-        let   pte= old_memory.page_table.find_pte(*vpn).unwrap();
-          pte.set_cow();
-      }
+    //     // 对每对 (vpn, frame) 做映射并记录
+    //     for (vpn, _) in old_area.data_frames.iter(){
+    //     let   pte= old_memory.page_table.find_pte(*vpn).unwrap();
+    //       pte.set_cow();
+    //   }
         
     }
 
@@ -1149,6 +1150,7 @@ pub struct TaskControlBlock {
     pub robust_list: Mutex<RobustList>,
     pub uid:AtomicUsize,
     noma_policy:AtomicUsize,
+    pub sleep_reason:spin::mutex::SpinMutex<WakeReason>,
     // pub cpu_set: AtomicU64,
 }
 impl TaskControlBlock {
@@ -1188,6 +1190,7 @@ impl TaskControlBlock {
             tms:UnsafeCell::new( TimeData::default()),
             uid:AtomicUsize::new(0),
             noma_policy:AtomicUsize::new(0),
+            sleep_reason:spin::mutex::SpinMutex::new(WakeReason::None),
         }
     }
 
@@ -1322,6 +1325,10 @@ impl TaskControlBlock {
     pub fn update_stime(&self){
 
         {unsafe { *self.tms.get() }}.update_stime();
+}
+/// Sets the wake reason for the task.
+pub fn set_sleep_reason(&self, reason: WakeReason) {
+    *self.sleep_reason.lock() = reason;
 }
 pub fn set_lead(&self){
       self.is_leader.store(true, Ordering::Release);

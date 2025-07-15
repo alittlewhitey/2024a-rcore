@@ -594,9 +594,6 @@ pub async fn from_existed_user(user_space: &mut Self) -> Self {
                 let new_area = MapArea::from_another(area);
                 memory_set.push_with_given_frames(new_area, &area.data_frames,false);
             } else if area.area_type == MapAreaType::Mmap 
-          
-            
-            
             {
                 // Private or other mappings: use COW
                 // Clone frame trackers to bump reference counts
@@ -605,11 +602,7 @@ pub async fn from_existed_user(user_space: &mut Self) -> Self {
 
                 // Insert mapping with shared frames
                 memory_set.push_with_given_frames(new_area, &area.data_frames,true);
-              // 对每对 (vpn, frame) 做映射并记录
-        for (vpn, _) in area.data_frames.iter(){
-              let   pte= user_space.page_table.find_pte(*vpn).unwrap();
-                pte.set_cow();
-            }
+  
             }
             else if let MapAreaType::Shm { shmid } = area.area_type {
               let guard= SHM_MANAGER.lock().await;
@@ -961,7 +954,7 @@ pub async fn handle_page_fault(
     let start = self.areatree.find_area(vpn);
 
     // self.areatree.debug_print();
-    trace!("[mmap_page_fault] handle page fault at va:{:#x},vpn:{:#x},start_vpn:{:#x}", fault_va.0, vpn.0, start.map_or(0, |v| v.0));
+    info!("[mmap_page_fault] handle page fault at va:{:#x},vpn:{:#x},start_vpn:{:#x},is_write:{:#?}", fault_va.0, vpn.0, start.map_or(0, |v| v.0),is_write);
     // 1. 找不到映射区 → AreaNotFound
     let start_vpn = if let Some(v) = start {
         v
@@ -995,7 +988,7 @@ pub async fn handle_page_fault(
 
     // 4. 如果 vpn 在范围内，则进行懒分配处理
 if area.vpn_range.contains(vpn) {
-    trace!("[mmap_page_fault] lazy allocate page for vpn");
+    info!("[mmap_page_fault] lazy allocate page for vpn");
         // 映射一个页（lazy allocate）
         area.map_one(page_table, vpn).expect("no memery ");
 
@@ -1029,7 +1022,7 @@ if area.vpn_range.contains(vpn) {
 
         // 最后刷新 TLB
         flush_tlb(va.0);
-        trace!(
+        info!(
             "page alloc success area:{:#x}-{:#x}  addr:{:#x}",
             area.vpn_range.get_start().0,
             area.vpn_range.get_end().0,
@@ -1047,12 +1040,17 @@ if area.vpn_range.contains(vpn) {
 
 }else {
     if let Some(pte) =  page_table.find_pte(vpn){
-      match pte.is_cow()||is_write{
+      match pte.is_cow()&&is_write{
             true=>{
-    
+            info!("pte.flags(): {:?}", pte.flags());
+
+            if !pte.is_write_back(){
+                area.debug_print();
+                panic!();
+            }
              let ref_count=Arc::strong_count( area.data_frames.get(&vpn).expect("cow page should have frame"));
    if ref_count > 1 {
-    trace!("[mmap_page_fault] cow allocate page for vpn,pte:{:#? }",pte.flags());
+    info!("[mmap_page_fault] cow allocate page for vpn,pte:{:#? }",pte.flags());
 
     let src = &mut page_table.translate(vpn).unwrap().ppn().get_bytes_array()[..PAGE_SIZE];
     area.unmap_one(page_table, vpn);
@@ -1072,9 +1070,9 @@ if area.vpn_range.contains(vpn) {
         // 更新页表项为新页帧
     } else {
         // 如果引用计数为1，说明是私有页，不需要COW
-    trace!("[mmap_page_fault] cow not allocate page for vpn,pte:{:#? }",pte.flags());
 
-            pte.un_cow();
+    info!("[mmap_page_fault] cow not allocate page for vpn,pte:{:#? }",pte.flags());
+    pte.un_cow();
 
         flush_all();
         return Ok(true);

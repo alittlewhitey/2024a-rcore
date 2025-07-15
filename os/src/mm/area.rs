@@ -405,8 +405,8 @@ impl MapArea {
         is_cow:bool,
     ) {
         // 先获取 PTE flags
-        let pte_flags = PTEFlags::from_bits(self.map_perm.bits as usize)
-            .expect("Invalid permission flags");
+        let pte_flags = PTEFlags::from(self.map_perm);
+            
 
         // 对每对 (vpn, frame) 做映射并记录
         for (vpn, frame) in frames {
@@ -416,12 +416,11 @@ impl MapArea {
             if is_cow {
                 // 如果是 COW 映射，设置相应的标志
               let   pte=  page_table.find_pte(*vpn).unwrap();
-                pte.set_cow();
-                // println!("pte:{:?}",pte.flags());
-                // 记录到 data_frames 中
+                    pte.set_cow();
 
-            self.data_frames.insert(*vpn, frame.clone());
             }
+            
+            self.data_frames.insert(*vpn, frame.clone());
         }
     }
     /// Update area's mapping flags and write it to page table. You need to flush TLB after calling

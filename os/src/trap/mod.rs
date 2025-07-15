@@ -112,7 +112,7 @@ pub fn trampoline(_tc: *mut TrapContext, has_trap: bool, from_user: bool) {
                         CurrentTask::init_current(task);
                     }
                     let res = CurrentTask::get();
-                    // trace!("take a task tid = {}",res.id());
+                    trace!("take a task tid = {}",res.id());
 
                     Some(res)
                 } else {
@@ -142,6 +142,7 @@ fn log_page_fault_error(scause: Scause, stval: usize, sepc: usize) {
         stval,
         sepc
     );
+    
 }
 
 ///a future to handle user trap
@@ -197,7 +198,8 @@ pub async fn user_task_top() -> i32 {
                                 yield_now().await;
 
                                 tf.regs.a0
-                            } else if err == SysErrNo::ECHILD {
+                            } else 
+                            if err == SysErrNo::ECHILD {
                                
                                 debug!("\x1b[93m [Syscall]Err: {},syscall:{}\x1b[0m", err.str(),tf.regs.a7);
 

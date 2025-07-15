@@ -131,7 +131,16 @@ type SchedItem<T> = Arc<CFSTask<T>>;
 impl<T> CFScheduler<T> {
 
     // fn init(&mut self) {}
-
+    pub fn debug_print(&self){
+        println!("CFScheduler Debug Info:");
+        println!("  Ready Queue Size: {}", self.ready_queue.len());
+        println!("  Min Vruntime: {:?}", self.min_vruntime.as_ref().map(|v| v.load(Ordering::Acquire)));
+        println!("  ID Pool: {}", self.id_pool.load(Ordering::Acquire));
+        // Optionally, print the contents of the ready queue (for debugging purposes)
+        for ((vruntime, taskid), task) in self.ready_queue.iter() {
+            println!("    Task ID: {}, Vruntime: {}", taskid, vruntime);
+        }
+    }
     fn add_task(&mut self, task: SchedItem<T>) {
         if self.min_vruntime.is_none() {
             self.min_vruntime = Some(AtomicIsize::new(0_isize));
@@ -218,3 +227,4 @@ pub fn task_tick(current: &SchedItem<TaskControlBlock>) -> bool {
 pub fn set_priority(task: &SchedItem<TaskControlBlock>, prio: isize) -> bool {
     KERNEL_SCHEDULER.lock().set_priority(task, prio)
 }
+

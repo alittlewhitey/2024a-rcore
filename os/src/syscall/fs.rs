@@ -5,7 +5,7 @@ use crate::fs::mount::MNT_TABLE;
 use crate::fs::pipe::make_pipe;
 use crate::fs::stat::Statx;
 use crate::fs::vfs::VfsManager;
-use crate::signal::SigSet;
+use crate::signal::{handle_pending_signals, SigSet};
 use crate::syscall::flags::{FaccessatMode, MlockallFlags};
 use crate::timer::{TimeVal, UserTimeSpec};
 use crate::utils::string::{get_abs_path, get_parent_path_and_filename, is_abs_path};
@@ -1137,22 +1137,14 @@ pub async fn sys_ppoll(
         tmo_user_ptr,
         sigmask_user_ptr
     );
-
+    if handle_pending_signals(Some(0)).await{
+        return Err(SysErrNo::ERESTART)
+    }
     // 1. 处理 nfds = 0 的情况 (与 poll 类似，但要注意信号掩码的设置和恢复)
     if nfds == 0 {
         let mut old_sigmask_to_restore: Option<SigSet> = None;
         if !sigmask_user_ptr.is_null() {
-            // 原子地设置新信号掩码，并保存旧掩码
-            // 这需要一个内部函数，我们称之为 sys_sigprocmask_internal
-            // 它不直接是系统调用，而是内核内部操作信号掩码的逻辑
-            // match sys_sigprocmask_internal(libc::SIG_SETMASK, sigmask_user_ptr, Some(&mut old_mask_for_restore)) {
-            //     Ok(old_mask) => old_sigmask_to_restore = Some(old_mask),
-            //     Err(e) => return Err(e), // 复制或设置掩码失败
-            // }
-            // old_sigmask_to_restore = Some(swap_current_thread_sigmask_from_user(token, sigmask_user_ptr)?);
-            // 这里需要更底层的实现。我们将使用一个 RAII Guard 来确保恢复。
-            // 或者在 defer 块中恢复。
-            // 为了简化，我们假设我们有一个临时的内部函数
+          
             let pcb_arc_temp = current_process(); // 获取 pcb 以访问 token 和任务状态
             let token_temp = pcb_arc_temp.memory_set.lock().await.token();
             match set_temp_sigmask_from_user(token_temp, sigmask_user_ptr).await {
@@ -1282,7 +1274,7 @@ pub async fn sys_ppoll(
 
     // 6. 计算超时 deadline (从 timespec)
     let poll_future_timeout_deadline: Option<TimeVal> = if tmo_user_ptr.is_null() {
-        None // 无限等待
+        None
     } else {
         let timeout_spec =
             match unsafe { copy_from_user_exact::<UserTimeSpec>(token, tmo_user_ptr) } {

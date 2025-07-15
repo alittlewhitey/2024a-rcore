@@ -45,8 +45,8 @@ bitflags::bitflags! {
         /// can be accessed by any program with privilege Level highter than PLV.
         const RPLV = bit!(63);
         // COW 相关标志位 - 使用空闲的位
-        const COW = 1 << 49;      // Copy-On-Write 标志
-        const W_BACKUP = 1 << 48; // 写权限备份
+        const COW =bit!(49);      // Copy-On-Write 标志
+        const W_BACKUP = bit!(50); // 写权限备份
     }
 }
 
@@ -162,6 +162,7 @@ impl PageTableEntry {
 
         if flags.contains(PTEFlags::W_BACKUP) {
             flags.insert(PTEFlags::W);
+            flags.insert(PTEFlags::D);
         }
 
         flags.remove(PTEFlags::COW);
@@ -169,31 +170,20 @@ impl PageTableEntry {
 
         self.set_flags(flags);
     }
-    pub fn clear_cow(&mut self) {
-        let mut flags = self.flags();
-        
-        // 清除 COW 标志
-        flags.remove(PTEFlags::COW);
-        
-        // 如果有备份的写权限，则恢复
-        if flags.contains(PTEFlags::W_BACKUP) {
-            flags.insert(PTEFlags::W);
-            flags.remove(PTEFlags::W_BACKUP);
-        }
-        
-        // 更新页表项
-        self.set_flags(flags);
+   
+    pub fn is_write_back(&self)->bool{
+        let flags= self.flags();
+        flags.contains(PTEFlags::W_BACKUP)
     }
-
     pub fn set_flags(&mut self, flags: PTEFlags) {
         // 保留 PPN 部分，更新标志位
-        let ppn_bits = self.bits & !((1usize << PAGE_SIZE_BITS) - 1) & !((7usize << 61) | (3usize << 9));
+        let ppn_bits = self.bits & ((1usize << PALEN) - (1usize << PAGE_SIZE_BITS));
         self.bits = ppn_bits | flags.bits();
     }
     
     pub fn set_ppn(&mut self, paddr: crate::mm::PhysAddr) {
         let ppn = crate::mm::PhysPageNum::from(paddr.0 >> PAGE_SIZE_BITS);
-        let flags_bits = self.bits & ((1usize << PAGE_SIZE_BITS) - 1) | (self.bits & (7usize << 61)) | (self.bits & (3usize << 9));
+        let flags_bits = self.flags().bits();
         self.bits = flags_bits | ((ppn.raw()& ((1usize << (PALEN - PAGE_SIZE_BITS)) - 1)) << PAGE_SIZE_BITS);
     }
 }

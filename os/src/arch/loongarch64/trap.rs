@@ -1,5 +1,5 @@
 use core::arch::{asm, global_asm};
-use loongArch64::register::{crmd::{self, Crmd}, ecfg::{self, Ecfg}, ticlr::{self, Ticlr}};
+use loongArch64::register::{crmd::{self, Crmd}, ecfg::{self, Ecfg, LineBasedInterrupt}, tcfg, ticlr::{self, Ticlr}};
 
 use crate::arch::{tlb_fill, TrapArch};
 
@@ -29,7 +29,10 @@ pub enum LoongArchException {
 pub enum LoongArchInterrupt {
     Timer = 11,             // Timer interrupt
 }
-
+// pub fn init_irq(){
+//     ticlr::clear_timer_interrupt();
+//     ecfg::set_lie(lie);
+// }
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LoongArchScause {
    pub bits: usize,
@@ -91,10 +94,16 @@ impl TrapArch for LoongArch64Trap {
         Self::set_trap_vector();
         tlb_init(tlb_fill as usize);
         ticlr::clear_timer_interrupt();
+        tcfg::set_periodic(false); // set timer to one-shot modeo
+        tcfg::set_init_val(0); // set timer initial value
+        tcfg::set_en(true); // enable timer
+        let inter = LineBasedInterrupt::TIMER
+            | LineBasedInterrupt::SWI0
+            | LineBasedInterrupt::SWI1
+            | LineBasedInterrupt::HWI0;
+        ecfg::set_lie(inter);
         ecfg::set_vs(0);
-        let mut lie = ecfg::read().lie();
-        lie.remove(ecfg::LineBasedInterrupt::TIMER); 
-        ecfg::set_lie(lie);
+        
         crmd::set_ie(false);
         loongArch64::register::eentry::set_eentry(trap_vector_base as usize); 
     }
@@ -105,25 +114,13 @@ impl TrapArch for LoongArch64Trap {
     }
     
     fn enable_irqs() {
-        unsafe {
-            core::arch::asm!(
-                "csrrd $t0, 0x4",    // CSR_ECFG
-                "ori $t0, $t0, 0x800", // Set TI bit (bit 11)
-                "csrwr $t0, 0x4",    // CSR_ECFG
-            );
-        }
+        loongArch64::register::prmd::set_pie(true);
     }
     
     fn disable_irqs() {
-        unsafe {
-            // 需要使用 andn 指令或者先加载掩码到寄存器
-            core::arch::asm!(
-                "csrrd $t0, 0x4",       // CSR_ECFG
-                "li.d $t1, 0x800",      // Load mask
-                "andn $t0, $t0, $t1",   // Clear TI bit using andn
-                "csrwr $t0, 0x4",       // CSR_ECFG
-            );
-        }
+        
+        loongArch64::register::prmd::set_pie(false);
+
     }
     
     fn enable_kernel_irqs() {
