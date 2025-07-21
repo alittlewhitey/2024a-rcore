@@ -1,24 +1,62 @@
 //! Process management syscalls
 //!
 
-
-
 use core::{error, future::Future, pin::Pin};
 
 use alloc::{
-   boxed::Box, collections::{btree_map::BTreeMap, linked_list::LinkedList}, format, string::{String, ToString}, sync::Arc, vec::Vec
+    boxed::Box,
+    collections::{btree_map::BTreeMap, linked_list::LinkedList},
+    format,
+    string::{String, ToString},
+    sync::Arc,
+    vec::Vec,
 };
-use linux_raw_sys::general::{AT_FDCWD};
+use linux_raw_sys::general::AT_FDCWD;
 use spin::Lazy;
 
 use crate::{
-    config::{FD_SETSIZE, MAX_SYSCALL_NUM, MEMORY_END, MMAP_BASE, MMAP_TOP, PAGE_SIZE, PAGE_SIZE_BITS}, fs::{open_file, select::{FdSet, PSelectFuture}, File, FileDescriptor, OpenFlags, NONE_MODE}, mm::{
-        flush_all,  frame_allocator::remaining_frames, get_target_ref, page_table::copy_to_user_bytes, put_data, translated_byte_buffer, translated_refmut, translated_str, FrameTracker, MapArea, MapAreaType, MapPermission, MapType, MmapFile, MmapFlags, TranslateError, UserBuffer, VirtAddr, VirtPageNum, MPOL_BIND, MPOL_DEFAULT, MPOL_PREFERRED
-    }, signal::{handle_pending_signals, SigMaskHow, SigSet, Signal, NSIG}, sync::futex::{ FutexKey, FutexWaitInternalFuture, GLOBAL_FUTEX_SYSTEM}, syscall::{flags::{  MmapProt, MremapFlags, WaitFlags, FUTEX_CLOCK_REALTIME, FUTEX_CMP_REQUEUE, FUTEX_OP_ADD, FUTEX_OP_ANDN, FUTEX_OP_CMP_EQ, FUTEX_OP_CMP_GE, FUTEX_OP_CMP_GT, FUTEX_OP_CMP_LE, FUTEX_OP_CMP_LT, FUTEX_OP_CMP_NE, FUTEX_OP_OR, FUTEX_OP_SET, FUTEX_OP_XOR, FUTEX_PRIVATE_FLAG, FUTEX_REQUEUE, FUTEX_WAIT, FUTEX_WAIT_BITSET, FUTEX_WAKE, FUTEX_WAKE_BITSET, FUTEX_WAKE_OP}, process}, task::{
-        current_process, current_task, current_task_id, current_token, exit_current, exit_proc, future::{JoinFuture, WaitAnyFuture}, set_priority, yield_now, CloneFlags, ProcessControlBlock,  RobustList, TaskStatus, PID2PC, TID2TC
-    }, timer::{ current_time, get_time_ns, get_time_us, get_usertime, usertime2_timeval, TimeVal, UserTimeSpec}, utils::{
-         error::{SysErrNo, SyscallRet}, page_round_up, string::get_abs_path
-    }
+    config::{
+        FD_SETSIZE, MAX_SYSCALL_NUM, MEMORY_END, MMAP_BASE, MMAP_TOP, PAGE_SIZE, PAGE_SIZE_BITS,
+    },
+    fs::{
+        open_file,
+        select::{FdSet, PSelectFuture},
+        File, FileDescriptor, OpenFlags, NONE_MODE,
+    },
+    mm::{
+        flush_all, frame_allocator::remaining_frames, get_target_ref,
+        page_table::copy_to_user_bytes, put_data, translated_byte_buffer, translated_refmut,
+        translated_str, FrameTracker, MapArea, MapAreaType, MapPermission, MapType, MmapFile,
+        MmapFlags, TranslateError, UserBuffer, VirtAddr, VirtPageNum, MPOL_BIND, MPOL_DEFAULT,
+        MPOL_PREFERRED,
+    },
+    signal::{handle_pending_signals, SigMaskHow, SigSet, Signal, NSIG},
+    sync::futex::{FutexKey, FutexWaitInternalFuture, GLOBAL_FUTEX_SYSTEM},
+    syscall::{
+        flags::{
+            MmapProt, MremapFlags, WaitFlags, FUTEX_CLOCK_REALTIME, FUTEX_CMP_REQUEUE,
+            FUTEX_OP_ADD, FUTEX_OP_ANDN, FUTEX_OP_CMP_EQ, FUTEX_OP_CMP_GE, FUTEX_OP_CMP_GT,
+            FUTEX_OP_CMP_LE, FUTEX_OP_CMP_LT, FUTEX_OP_CMP_NE, FUTEX_OP_OR, FUTEX_OP_SET,
+            FUTEX_OP_XOR, FUTEX_PRIVATE_FLAG, FUTEX_REQUEUE, FUTEX_WAIT, FUTEX_WAIT_BITSET,
+            FUTEX_WAKE, FUTEX_WAKE_BITSET, FUTEX_WAKE_OP,
+        },
+        process,
+    },
+    task::{
+        current_process, current_task, current_task_id, current_token, exit_current, exit_proc,
+        future::{JoinFuture, WaitAnyFuture},
+        set_priority, yield_now, CloneFlags, ProcessControlBlock, RobustList, TaskStatus, PID2PC,
+        TID2TC,
+    },
+    timer::{
+        current_time, get_time_ns, get_time_us, get_usertime, usertime2_timeval, TimeVal,
+        UserTimeSpec,
+    },
+    utils::{
+        error::{SysErrNo, SyscallRet},
+        page_round_up,
+        string::get_abs_path,
+    },
 };
 pub const MADV_NORMAL: u32 = 0;
 pub const MADV_RANDOM: u32 = 1;
@@ -60,10 +98,14 @@ pub struct TaskInfo {
 }
 
 pub fn sys_getppid() -> SyscallRet {
-    trace!("[sys_getppid] pid :{},tid:{}", current_task().get_pid(),current_task_id());
+    trace!(
+        "[sys_getppid] pid :{},tid:{}",
+        current_task().get_pid(),
+        current_task_id()
+    );
     Ok(current_process().parent())
 }
-pub async  fn sys_exit(exit_code: i32) -> SyscallRet {
+pub async fn sys_exit(exit_code: i32) -> SyscallRet {
     info!("kernel:tid[{}] sys_exit", current_task().id());
 
     exit_current(exit_code).await;
@@ -100,9 +142,9 @@ pub async fn sys_clone(args: [usize; 6]) -> SyscallRet {
              let tls = args[4];
             let ctid = args[3];
         }
-        
+
     }
-   
+
     let proc = current_process();
 
     let flags =
@@ -117,9 +159,8 @@ pub async fn sys_clone(args: [usize; 6]) -> SyscallRet {
     //     return Err(SysErrNo::EINVAL);
     // }
 
-    if flags.contains(CloneFlags::CLONE_VM) && user_stack==0{
+    if flags.contains(CloneFlags::CLONE_VM) && user_stack == 0 {
         return Err(SysErrNo::EINVAL);
-
     }
     if flags.contains(CloneFlags::CLONE_SETTLS) && !flags.contains(CloneFlags::CLONE_VM) {
         // CLONE_SETTLS requires CLONE_VM
@@ -161,7 +202,7 @@ pub async fn sys_clone(args: [usize; 6]) -> SyscallRet {
         return Err(SysErrNo::EINVAL);
     }
 
-    let res=proc.clone_task(flags, user_stack, ptid, tls, ctid).await;
+    let res = proc.clone_task(flags, user_stack, ptid, tls, ctid).await;
     // println!("in clone self:");
     // current_process().memory_set.lock().await.areatree.debug_print();
 
@@ -172,12 +213,15 @@ pub async fn sys_clone(args: [usize; 6]) -> SyscallRet {
 ///
 /// todo(heliosly)
 /// 更换主线程 ，处理FXCLOSE
-pub  async  fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usize) -> SyscallRet {
-    
+pub async fn sys_execve(
+    path: *const u8,
+    mut argv: *const usize,
+    mut envp: *const usize,
+) -> SyscallRet {
     let process = current_process();
-    
+
     let token = process.get_user_token().await;
-   
+
     // if path.is_dir() {
     //     return Err(SysErrNo::EISDIR);
     // }
@@ -193,7 +237,6 @@ pub  async  fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *co
     //     }
     // }
     loop {
-      
         let argv_ptr = *get_target_ref(token, argv)?;
         if argv_ptr == 0 {
             break;
@@ -203,29 +246,33 @@ pub  async  fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *co
             argv = argv.add(1);
         }
     }
-    
-     let mut path = translated_str(token, path);
+
+    let mut path = translated_str(token, path);
     if path.ends_with(".sh") {
         //.sh文件不是可执行文件，需要用busybox的sh来启动
         argv_vec.insert(0, String::from("sh"));
         argv_vec.insert(0, String::from("busybox "));
         path = String::from("/glibc/busybox");
     }
-    path = process.resolve_path_from_fd(AT_FDCWD , path.as_str(),true).await?;
+    path = process
+        .resolve_path_from_fd(AT_FDCWD, path.as_str(), true)
+        .await?;
     // if path.ends_with("ls") || path.ends_with("xargs") || path.ends_with("sleep") {
     //     //ls,xargs,sleep文件为busybox调用，需要用busybox来启动
     //     argv_vec.insert(0, String::from("busybox"));
     //     path = String::from("/busybox");
     // }
 
-    if path=="/glibc/entry-dynamic.exe"||path=="/glibc/entry-static.exe" {
-       if argv_vec.get(1).is_some(){
-            if argv_vec[1] == "setvbuf_unget"||(argv_vec[1]=="sem_init"&&path=="/glibc/entry-dynamic.exe"){
+    if path == "/glibc/entry-dynamic.exe" || path == "/glibc/entry-static.exe" {
+        if argv_vec.get(1).is_some() {
+            if argv_vec[1] == "setvbuf_unget"
+                || (argv_vec[1] == "sem_init" && path == "/glibc/entry-dynamic.exe")
+            {
                 exit_proc(-2).await;
                 return Ok(0);
-       }
+            }
+        }
     }
-}
     // println!("[sys_execve] path is {},arg is {:?}", path, argv_vec);
     info!("[sys_execve] path is {},arg is {:?}", path, argv_vec);
     let mut env = Vec::<String>::new();
@@ -271,13 +318,13 @@ pub  async  fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *co
 
     let elf_data = app_inode.file()?.read_all();
     //在exec前清理clear_tid
-    for tcb in process.tasks.lock().await.iter(){
+    for tcb in process.tasks.lock().await.iter() {
         let _ = tcb.clear_child_tid().await;
     }
 
     process.set_exe(abs_path).await;
     process.exec(&elf_data, &argv_vec, &mut env).await?;
-    
+
     // println!("in execve:");
     // process.memory_set.lock().await.areatree.debug_print();
     // if !va_is_valid(0x10017a, process.memory_set.lock().await.token()){
@@ -286,7 +333,7 @@ pub  async  fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *co
     Ok(0)
 }
 
-pub fn sys_settidaddress(tid_ptr:usize) -> SyscallRet {
+pub fn sys_settidaddress(tid_ptr: usize) -> SyscallRet {
     trace!(
         "kernel:pid[{}] sys_settidaddress ",
         current_task().get_pid()
@@ -302,7 +349,6 @@ pub fn sys_getuid() -> SyscallRet {
     //todo(heliosly)
     Ok(0)
 }
-
 
 // pub async fn sys_wait4(pid: isize, wstatus_ptr: *mut i32, options: i32, rusage_ptr: *mut Rusage) -> SyscallRet {
 //     trace!(
@@ -396,7 +442,7 @@ pub fn sys_getuid() -> SyscallRet {
 //             if !rusage_ptr.is_null() {
 //                 *translated_refmut(proc.get_user_token().await, rusage_ptr)? = rusage_val;
 //             }
-            
+
 //             // 只有当子进程是 Zombie 时才从父进程的子进程列表和全局 PID 映射中移除
 //             // WUNTRACED 和 WCONTINUED 不应导致子进程被彻底清理
 //             let child_inner_status = child_to_reap_arc.inner.lock().await.status; // Re-check status, though it shouldn't change here
@@ -416,7 +462,6 @@ pub fn sys_getuid() -> SyscallRet {
 //             } else {
 //                 debug!("sys_wait4: Child {} (status {:?}) not a zombie, not removing.", reaped_pid, child_inner_status);
 //             }
-
 
 //             drop(children_guard); // Release lock on children list
 //             return Ok(reaped_pid as isize); // 返回子进程的 PID
@@ -454,7 +499,6 @@ pub fn sys_getuid() -> SyscallRet {
 //                 }
 //             }
 
-
 //             if (options & WNOHANG) != 0 {
 //                 // WNOHANG 设置，且没有子进程准备好，返回 0
 //                 debug!("sys_wait4: WNOHANG set, no child ready for parent {}. Returning 0.", proc_pid);
@@ -472,7 +516,7 @@ pub fn sys_getuid() -> SyscallRet {
 //                 // 如果没有外部事件唤醒此任务，它可能会在下次轮到时立即再次检查
 //                 debug!("sys_wait4: No child ready, blocking (conceptually) for parent {}.", proc_pid);
 //                 drop(children_guard); // 必须释放锁才能让其他任务（如子进程退出）进行
-                
+
 //                 // 在真实的 async 内核中，这里会 park 当前任务，并注册一个 waker
 //                 // 子进程退出时会 wake 这个 waker。
 //                 // 简化的做法是让当前任务 yield，等待下次被调度。
@@ -495,11 +539,15 @@ pub fn sys_getuid() -> SyscallRet {
 //        is equal to that of the calling process at the time of the call to waitpid().
 // > 0    meaning wait for the child whose process ID is equal to the value of pid.
 
-
 pub async fn sys_wait4(pid: isize, wstatus: *mut i32, options: u32) -> SyscallRet {
-
     let proc = current_process();
-    info!("[sys_wait4] pid:{}, wstatus:{:?}, options:{},pid:{}", pid, wstatus, options,proc.get_pid());
+    info!(
+        "[sys_wait4] pid:{}, wstatus:{:?}, options:{},pid:{}",
+        pid,
+        wstatus,
+        options,
+        proc.get_pid()
+    );
 
     // --- 0. 参数校验 ---
     if pid == 0 || (pid as i32) == i32::MIN {
@@ -511,48 +559,61 @@ pub async fn sys_wait4(pid: isize, wstatus: *mut i32, options: u32) -> SyscallRe
         None => return Err(SysErrNo::EINVAL),
     };
 
-
-    loop { // 使用循环来处理查找和等待的逻辑
+    loop {
+        // 使用循环来处理查找和等待的逻辑
         // --- 1. 查找已存在的僵尸子进程 (持有锁的快速路径) ---
         let mut children_guard = proc.children.lock().await;
 
         // 检查是否有任何子进程，如果没有，并且指定了pid，就ECHILD
-        if !children_guard.iter().any(|p| pid == -1 || pid as usize == p.get_pid()) {
-             if pid > 0 && children_guard.is_empty() {
+        if !children_guard
+            .iter()
+            .any(|p| pid == -1 || pid as usize == p.get_pid())
+        {
+            if pid > 0 && children_guard.is_empty() {
                 debug!("No children for parent pid: {}", proc.get_pid());
                 return Err(SysErrNo::ECHILD);
-             }
-             if pid > 0 { // 如果指定了pid，但不在子进程列表中
-                debug!("Cannot find specific pid: {} in children of pid: {}", pid, proc.get_pid());
+            }
+            if pid > 0 {
+                // 如果指定了pid，但不在子进程列表中
+                debug!(
+                    "Cannot find specific pid: {} in children of pid: {}",
+                    pid,
+                    proc.get_pid()
+                );
                 return Err(SysErrNo::ECHILD);
-             }
+            }
         }
-        
+
         for (idx, child_proc) in children_guard.iter().enumerate() {
-            if child_proc.is_zombie().await && (pid == -1 || (pid as usize) == child_proc.get_pid()) {
+            if child_proc.is_zombie().await && (pid == -1 || (pid as usize) == child_proc.get_pid())
+            {
                 let child_to_reap = children_guard.remove(idx);
                 let found_pid = child_to_reap.get_pid();
                 let exit_code = child_to_reap.exit_code();
-        
+
                 // 从全局PID映射中移除
                 PID2PC.lock().remove(&found_pid);
-        
+
                 // 释放锁
                 drop(children_guard);
-        
+
                 debug!("[sys_wait4] Reaped zombie child pid: {}", found_pid);
-        
+
                 if !wstatus.is_null() {
-                    proc.memory_set.lock().await.safe_put_data(wstatus, exit_code << 8).await?;
+                    proc.memory_set
+                        .lock()
+                        .await
+                        .safe_put_data(wstatus, exit_code << 8)
+                        .await?;
                 }
-        
+
                 // assert_eq!(
                 //     Arc::strong_count(&child_to_reap),
                 //     1,
                 //     "strong_count should be 1 after reaping, but is {}",
                 //     Arc::strong_count(&child_to_reap)
                 // );
-        
+
                 return Ok(found_pid);
             }
         }
@@ -562,32 +623,31 @@ pub async fn sys_wait4(pid: isize, wstatus: *mut i32, options: u32) -> SyscallRe
         if wait_flags.contains(WaitFlags::WNOHANG) {
             return Ok(0);
         }
-       // --- 准备等待 ---
+        // --- 准备等待 ---
         // **关键点: 在 await 之前释放锁!**
-        
+
         // 提取需要等待的子进程列表 (克隆Arc，不持有子进程内部的锁)
-        let children_to_watch: Vec<Arc<ProcessControlBlock>> = children_guard.iter().cloned().collect();
+        let children_to_watch: Vec<Arc<ProcessControlBlock>> =
+            children_guard.iter().cloned().collect();
         drop(children_guard); // **立即释放锁**
 
         let future_to_await: Pin<Box<dyn Future<Output = usize> + Send + Sync>> = if pid == -1 {
             if children_to_watch.is_empty() {
                 return Err(SysErrNo::ECHILD);
             }
-            let futures_iter = children_to_watch.iter().map(|p| async move {
-                    p.main_task.lock().await.clone()
-                });
-                let tasks_to_wait = futures::future::join_all(futures_iter).await;
+            let futures_iter = children_to_watch
+                .iter()
+                .map(|p| async move { p.main_task.lock().await.clone() });
+            let tasks_to_wait = futures::future::join_all(futures_iter).await;
             // 使用正确的异步处理方式来创建 WaitAnyFuture
             Box::pin(async move {
                 // 1. 创建一个获取所有主线程 TCB 的 Future
-                
 
                 // 2. 并发地执行这些 Future 来获取 TCB 列表
 
                 // 3. 用获取到的 TCB 列表创建 WaitAnyFuture
                 WaitAnyFuture::new(tasks_to_wait).await
             })
-
         } else {
             // ... (等待特定 pid 的逻辑不变) ...
             // 注意：这里也需要遵循同样的模式，先释放所有锁再 await
@@ -595,8 +655,7 @@ pub async fn sys_wait4(pid: isize, wstatus: *mut i32, options: u32) -> SyscallRe
             // 在这里已经没有 children_guard 锁了，是安全的
 
             if let Some(child_proc) = child_proc_opt {
-
-            let task = child_proc.main_task.lock().await.clone();
+                let task = child_proc.main_task.lock().await.clone();
                 Box::pin(async move {
                     JoinFuture::new(task).await;
                     pid as usize
@@ -605,10 +664,10 @@ pub async fn sys_wait4(pid: isize, wstatus: *mut i32, options: u32) -> SyscallRe
                 return Err(SysErrNo::ECHILD);
             }
         };
-        
+
         // --- 执行等待 (无锁状态) ---
         future_to_await.await;
-        
+
         // --- 返回循环开始处，重新查找并回收 ---
     }
 }
@@ -642,15 +701,15 @@ pub async fn sys_wait4(pid: isize, wstatus: *mut i32, options: u32) -> SyscallRe
 //     Ok(0)
 // }
 
-pub async  fn sys_gettimeofday(ts: *mut UserTimeSpec, tz: usize) -> SyscallRet {
+pub async fn sys_gettimeofday(ts: *mut UserTimeSpec, tz: usize) -> SyscallRet {
     trace!(
         "kernel:pid[{}] sys_get_time NOT IMPLEMENTED",
         current_task().get_pid()
     );
     let pcb = current_process();
-    let times= get_usertime();
+    let times = get_usertime();
     pcb.manual_alloc_type_for_lazy(ts).await?;
-    put_data( pcb.get_user_token().await,ts,times)?; 
+    put_data(pcb.get_user_token().await, ts, times)?;
     Ok(0)
 }
 // pub fn sys_gettimeofday(tp: usize, tz: usize) -> isize {
@@ -670,7 +729,7 @@ pub async  fn sys_gettimeofday(ts: *mut UserTimeSpec, tz: usize) -> SyscallRet {
 //     0
 // }
 ///TODO(Heliosly)
-pub async  fn sys_exitgroup(exit_code: i32) -> SyscallRet {
+pub async fn sys_exitgroup(exit_code: i32) -> SyscallRet {
     info!(
         "[sys_exit_group]_exitgroup pid:{} ",
         current_task().get_pid()
@@ -743,7 +802,6 @@ pub async fn sys_mmap(
     fd: isize,
     off: usize,
 ) -> SyscallRet {
-    
     //需要有严格的判断返回错误的顺序！！！
     // 0. flags 不能全 0
     // 4. prot -> MapPermission
@@ -756,19 +814,21 @@ pub async fn sys_mmap(
     if flags == 0 {
         return Err(SysErrNo::EINVAL);
     }
-   
 
     let flags = match MmapFlags::from_bits(flags) {
         Some(f) => f,
-        None => return {
-            warn!("[sys_mmap],flags is incorrect" );
-            Err(SysErrNo::EINVAL)},
+        None => {
+            return {
+                warn!("[sys_mmap],flags is incorrect");
+                Err(SysErrNo::EINVAL)
+            }
+        }
     };
- info!(
+    info!(
         "[sys_mmap]: addr {:#x}, len {:#x}, fd {}, offset {:#x}, flags {:?}, prot is {:?}, map_perm {:?} pid:{},tid:{}",
         addr, len, fd , off, flags,mmap_prot, map_perm,current_process().get_pid(),current_task_id()
     );
-    if !flags.contains(MmapFlags::MAP_ANONYMOUS)&&fd<0{
+    if !flags.contains(MmapFlags::MAP_ANONYMOUS) && fd < 0 {
         return Err(SysErrNo::EINVAL);
     }
 
@@ -780,15 +840,15 @@ pub async fn sys_mmap(
     if off % PAGE_SIZE != 0 {
         return Err(SysErrNo::EINVAL);
     }
-    if len>>PAGE_SIZE_BITS > remaining_frames(){
+    if len >> PAGE_SIZE_BITS > remaining_frames() {
         warn!(
             "Not enough physical frames: requested {:#x} pages , remaining frames: {:#x}",
-            len>>PAGE_SIZE_BITS,
+            len >> PAGE_SIZE_BITS,
             remaining_frames()
         );
         return Err(SysErrNo::ENOMEM);
     }
-    let fd = fd as usize ;
+    let fd = fd as usize;
     // 3. 匿名映射 | 文件映射：fd 检查
     let anon = flags.contains(MmapFlags::MAP_ANONYMOUS);
     if !anon {
@@ -796,15 +856,12 @@ pub async fn sys_mmap(
         if fd == usize::MAX {
             return Err(SysErrNo::EBADE);
         }
-    }
-    else{
-        if fd!=usize::MAX{
+    } else {
+        if fd != usize::MAX {
             return Err(SysErrNo::EINVAL);
         }
     }
-    
-   
-    
+
     // 5. MAP_FIXED 且 addr == 0 禁止
     if flags.contains(MmapFlags::MAP_FIXED) && addr == 0 {
         return Err(SysErrNo::EPERM);
@@ -818,13 +875,13 @@ pub async fn sys_mmap(
     let mut ms = proc.memory_set.lock().await;
 
     let fd_table = proc.fd_table.lock().await;
-    let mmap_flag= MmapFlags::empty();
+    let mmap_flag = MmapFlags::empty();
     // ——————————————————————————————————————————
     // 7. 如果是文件映射，要检查文件权限和 off_file
 
     let file = if !anon {
         // 7.1 拿到文件对象
-        let file = fd_table.get_file(fd)?; 
+        let file = fd_table.get_file(fd)?;
         // 7.2 写映射需可写权限
         if map_perm.contains(MapPermission::W) && !file.writable()? {
             return Err(SysErrNo::EACCES);
@@ -834,9 +891,9 @@ pub async fn sys_mmap(
         //     // 如果转换成功，说明 file 底层的类型就是 DevShm
         //     // dev_shm 是一个 &DevShm 类型的引用，但我们这里其实只需要判断成功与否
         //     // 接下来我们就可以调用 file.mmap，因为我们知道它是 DevShm 的 mmap
-            
+
         //     drop(fd_table); // 释放锁
-            
+
         //     // 调用 mmap 方法，它会通过 vtable（虚函数表）正确地分派到 DevShm::mmap
         //     return dev_shm.mmap(addr, len, map_perm , flags , off).await;
         // }
@@ -844,7 +901,7 @@ pub async fn sys_mmap(
         if off > file.fstat().st_size as usize {
             return Err(SysErrNo::EINVAL);
         }
-        
+
         Some(file)
     } else {
         None
@@ -861,12 +918,12 @@ pub async fn sys_mmap(
     // 8. 按 MAP_FIXED / MAP_FIXED_NOREPLACE / hint / 自动选择地址
     let base = if flags.contains(MmapFlags::MAP_FIXED) {
         // 8.1 强制定位：先 munmap 冲突区
-        if range.start.0<current_process().program_brk(){
-            return Err(SysErrNo::EEXIST)
-        }
-        
+        // if range.start.0<current_process().program_brk(){
+        //     return Err(SysErrNo::EEXIST)
+        // }
+
         if ms.areatree.is_overlap(&range) {
-            ms.munmap(vpn, end_vpn);
+            ms.munmap(vpn, end_vpn).await;
         }
 
         va
@@ -880,10 +937,10 @@ pub async fn sys_mmap(
         // 8.3 默认，从 addr 附近或全局搜索
         let hint_vpn = if addr == 0 {
             // 如果 addr 是 0，给一个默认的 hint，比如从 MMAP_BASE 开始
-            VirtPageNum::from(MMAP_BASE>>PAGE_SIZE_BITS ) 
+            VirtPageNum::from(MMAP_BASE >> PAGE_SIZE_BITS)
         } else {
             // 否则，使用用户提供的 addr 作为 hint，并向上页对齐
-            VirtAddr::from(addr).ceil() 
+            VirtAddr::from(addr).ceil()
         };
         match ms.areatree.alloc_pages_from_hint(pages, hint_vpn) {
             Some(vpn) => VirtAddr::from(vpn),
@@ -897,7 +954,7 @@ pub async fn sys_mmap(
         }
     };
     if base.0 >= MMAP_TOP {
-        warn!("[sys_mmap] alloc fault,unreachable,base:{:#x}",base.0);
+        warn!("[sys_mmap] alloc fault,unreachable,base:{:#x}", base.0);
         return Err(SysErrNo::ENOMEM);
     }
     // ——————————————————————————————————————————
@@ -909,19 +966,17 @@ pub async fn sys_mmap(
         map_perm,
         MapAreaType::Mmap, // Option<Arc<File>>
     );
-    area.mmap_flags=flags;
-    if let Some(file)=file{
-      area.set_fd(Some(MmapFile::new(file, off)));
+    area.mmap_flags = flags;
+    if let Some(file) = file {
+        area.set_fd(Some(MmapFile::new(file, off)));
     }
-
-    info!("[sys_mmap]mmap ok,base:{:#x}", base.0);
 
     // 10. 特殊 flags 的额外处理
     if flags.contains(MmapFlags::MAP_POPULATE) {
         // 立即为每页缺页、填充物理页
         area.map(&mut ms.page_table)?;
     }
-   
+
     // if flags.contains(MmapFlags::MAP_LOCKED) {
     //     // mlock：锁定这些物理页
     //     area.lock(&mut ms.page_table)?;
@@ -935,44 +990,45 @@ pub async fn sys_mmap(
     // 11. 插入到 MemorySet 的 areatree / VMA 列表
     ms.areatree.push(area);
     flush_all();
-
+    info!("[sys_mmap]mmap ok,base:{:#x}", base.0);
     // 12. 返回映射基址
     Ok(base.0)
 }
 
 /// YOUR JOB: Implement munmap.
-pub async  fn sys_munmap(start: usize, len: usize) -> SyscallRet {
-    trace!("kernel:pid[{}] sys_munmap ", current_task().get_pid());
-    
+pub async fn sys_munmap(start: usize, len: usize) -> SyscallRet {
+    info!(
+        "kernel:pid[{}] sys_munmap,start:{:#x},len:{:#x} ",
+        current_task().get_pid(),
+        start,
+        len
+    );
+
     let start_va = VirtAddr::from(start);
     let end_va = VirtAddr::from(start + len);
     current_process()
         .memory_set
-        .lock().await
-        .munmap(start_va.floor(), end_va.ceil());
+        .lock()
+        .await
+        .munmap(start_va.floor(), end_va.ceil())
+        .await;
     Ok(0)
 }
 
 /// change data segment size
-pub async  fn sys_brk(new_brk:usize) -> SyscallRet {
-    trace!(
-        "[sys_brk] new_brk_addr:{}",
-       
-        new_brk
-    );
-    let current_brk=current_process().program_brk();
-    if new_brk==0{
+pub async fn sys_brk(new_brk: usize) -> SyscallRet {
+    info!("[sys_brk] new_brk_addr:{:#x}", new_brk);
+    let current_brk = current_process().program_brk();
+    if new_brk == 0 {
         return Ok(current_brk);
     }
-    if new_brk == current_brk// 没有变化
-     {   return Ok(current_brk);}
-
-    // 地址必须在 heap 合法范围内
-    if new_brk < current_process().heap_bottom() {
-        return  Err(SysErrNo::EINVAL);
+    if new_brk == current_brk
+    // 没有变化
+    {
+        return Ok(current_brk);
     }
-   
-match current_process().change_program_brk(new_brk).await {
+
+    match current_process().change_program_brk(new_brk).await {
         Some(new_brk) => Ok(new_brk),
         None => Err(SysErrNo::ENOMEM),
     }
@@ -1012,7 +1068,6 @@ pub fn sys_set_priority(prio: isize) -> SyscallRet {
     Ok(0)
 }
 
-
 /// getcwd 系统调用实现
 /// buf: 用户空间缓冲区的指针，用于存储当前工作目录路径
 /// size: 用户缓冲区的大小
@@ -1025,14 +1080,17 @@ pub fn sys_set_priority(prio: isize) -> SyscallRet {
 pub async fn sys_getcwd(buf_user_ptr: *mut u8, size: usize) -> SyscallRet {
     trace!("[sys_getcwd](buf: {:p}, size: {})", buf_user_ptr, size);
 
-    if buf_user_ptr.is_null() && size != 0 { // POSIX 允许 buf 为 NULL 以查询所需大小，但我们这里简化
-        let len =current_process() .cwd.lock().await.as_bytes().len() + 1; // 包括 null terminator
+    if buf_user_ptr.is_null() && size != 0 {
+        // POSIX 允许 buf 为 NULL 以查询所需大小，但我们这里简化
+        let len = current_process().cwd.lock().await.as_bytes().len() + 1; // 包括 null terminator
         return Ok(len);
     }
-    if size == 0 && !buf_user_ptr.is_null() { // size 为0但buf非NULL，POSIX行为未明确，这里视为无效
+    if size == 0 && !buf_user_ptr.is_null() {
+        // size 为0但buf非NULL，POSIX行为未明确，这里视为无效
         return Err(SysErrNo::EINVAL);
     }
-    if size == 0 && buf_user_ptr.is_null() { // POSIX 允许此情况动态分配，我们不支持
+    if size == 0 && buf_user_ptr.is_null() {
+        // POSIX 允许此情况动态分配，我们不支持
         return Err(SysErrNo::EINVAL); // 或者 ERANGE，因为大小为0肯定不够
     }
     let proc_arc = current_process();
@@ -1065,13 +1123,15 @@ pub async fn sys_getcwd(buf_user_ptr: *mut u8, size: usize) -> SyscallRet {
                 // log::error!("sys_getcwd: copy_to_user_bytes copied {} bytes, expected {}", bytes_copied, cwd_len_with_null);
                 Err(SysErrNo::EFAULT)
             } else {
-                Ok(bytes_copied )
+                Ok(bytes_copied)
             }
         }
         Err(translate_error) => {
             // log::warn!("sys_getcwd: copy_to_user_bytes failed: {:?}", translate_error);
             match translate_error {
-                TranslateError::TranslationFailed(_) | TranslateError::PermissionDenied(_) => Err(SysErrNo::EFAULT),
+                TranslateError::TranslationFailed(_) | TranslateError::PermissionDenied(_) => {
+                    Err(SysErrNo::EFAULT)
+                }
                 TranslateError::UnexpectedEofOrFault => Err(SysErrNo::ECONNABORTED),
                 _ => Err(SysErrNo::EFAULT),
             }
@@ -1079,23 +1139,24 @@ pub async fn sys_getcwd(buf_user_ptr: *mut u8, size: usize) -> SyscallRet {
     }
 }
 
-pub async fn sys_get_robust_list(pid: usize, head_ptr: *mut usize, len_ptr: *mut usize) -> SyscallRet {
-
-    trace!("[sys_get_robust_list] NOT IMPLEMENT" );
+pub async fn sys_get_robust_list(
+    pid: usize,
+    head_ptr: *mut usize,
+    len_ptr: *mut usize,
+) -> SyscallRet {
+    trace!("[sys_get_robust_list] NOT IMPLEMENT");
 
     let tid2tc_lock = TID2TC.lock();
-    let  task =tid2tc_lock.get(&pid);
-    if  pid == 0 {
-       let  task = current_task();
-       let token =unsafe { *task.page_table_token.get() };
-       let robust = task.robust_list.lock().await;
-       put_data(token, head_ptr, robust.head)?;
-       put_data(token, len_ptr, robust.len)?;
-       Ok(0)
-    }
-    else
-    if let Some(task) = task {
-        let token =unsafe { *task.page_table_token.get() };
+    let task = tid2tc_lock.get(&pid);
+    if pid == 0 {
+        let task = current_task();
+        let token = unsafe { *task.page_table_token.get() };
+        let robust = task.robust_list.lock().await;
+        put_data(token, head_ptr, robust.head)?;
+        put_data(token, len_ptr, robust.len)?;
+        Ok(0)
+    } else if let Some(task) = task {
+        let token = unsafe { *task.page_table_token.get() };
         let robust = task.robust_list.lock().await;
         put_data(token, head_ptr, robust.head)?;
         put_data(token, len_ptr, robust.len)?;
@@ -1103,52 +1164,53 @@ pub async fn sys_get_robust_list(pid: usize, head_ptr: *mut usize, len_ptr: *mut
     } else {
         Err(SysErrNo::ESRCH)
     }
-
 }
 
 pub async fn sys_set_robust_list(head: usize, len: usize) -> SyscallRet {
-    trace!("[sys_set_robust_list] NOT IMPLEMENT" );
+    trace!("[sys_set_robust_list] NOT IMPLEMENT");
     if len != RobustList::HEAD_SIZE {
         return Err(SysErrNo::EINVAL);
-        
     }
 
     let task = current_task();
     task.robust_list.lock().await.head = head;
-    
-    task.robust_list.lock().await.len= len;
+
+    task.robust_list.lock().await.len = len;
     Ok(0)
 }
 
-
-pub async  fn sys_prlimit(
+pub async fn sys_prlimit(
     pid: usize,
     resource: u32,
     new_limit: *const RLimit,
     old_limit: *mut RLimit,
-) -> SyscallRet{
-
-    trace!("[sys_prlimit]: pid:{},resource:{},new_limit:{:?},old_limit:{:?}",pid,resource,new_limit,old_limit);
+) -> SyscallRet {
+    trace!(
+        "[sys_prlimit]: pid:{},resource:{},new_limit:{:?},old_limit:{:?}",
+        pid,
+        resource,
+        new_limit,
+        old_limit
+    );
     const RLIMIT_NOFILE: u32 = 7;
-        let proc = current_process();
-        if !old_limit.is_null() {
+    let proc = current_process();
+    if !old_limit.is_null() {
         proc.manual_alloc_type_for_lazy(old_limit).await?;
-        }
-        if !new_limit.is_null() {
+    }
+    if !new_limit.is_null() {
         proc.manual_alloc_type_for_lazy(new_limit).await?;
-        }
-        let token  = proc.get_user_token().await;
+    }
+    let token = proc.get_user_token().await;
     if resource != RLIMIT_NOFILE {
         // 说明是get
         // let limit = translated_refmut(token, old_limit)?;
         // limit.rlim_cur = 0xdeadbeff;
         // limit.rlim_max =  0xdeadbeff;
-        return Ok(0)
+        return Ok(0);
     }
 
     if pid == 0 {
-       
-        let fd_table =  proc.fd_table.lock().await;
+        let fd_table = proc.fd_table.lock().await;
         if !old_limit.is_null() {
             // 说明是get
             let limit = translated_refmut(token, old_limit)?;
@@ -1165,7 +1227,7 @@ pub async  fn sys_prlimit(
     }
 
     Ok(0)
-//   Err(SysErrNo::ENOSYS )
+    //   Err(SysErrNo::ENOSYS )
 }
 
 #[repr(C)]
@@ -1175,42 +1237,24 @@ pub struct RLimit {
     pub rlim_max: usize, /* Hard limit (ceiling for rlim_cur) */
 }
 
-
-
-
-
-
-pub async fn sys_mprotect( start: usize, size: usize, flags: usize)->SyscallRet {
-    trace!("[sys_mprotect] start:{:#x},size:{:#x},flags:{:#x}",start,size,flags);
-     let start_va= VirtAddr::from(start);
-     let pcb_arc= current_process();
-     let mut memory_set = pcb_arc.memory_set.lock().await;
+pub async fn sys_mprotect(start: usize, size: usize, flags: usize) -> SyscallRet {
+    info!(
+        "[sys_mprotect] start:{:#x},size:{:#x},flags:{:#x}",
+        start, size, flags
+    );
+    let start_va = VirtAddr::from(start);
+    let pcb_arc = current_process();
+    let mut memory_set = pcb_arc.memory_set.lock().await;
     match MmapProt::from_bits(flags as u32) {
-       Some(prot) => {
-          memory_set.mprotect(start_va, size, prot.into()).await;
-       }
-       None => {
-          return Err(SysErrNo::EINVAL);
-       }
+        Some(prot) => {
+            memory_set.mprotect(start_va, size, prot.into()).await;
+        }
+        None => {
+            return Err(SysErrNo::EINVAL);
+        }
     }
-     Ok(0)
-
+    Ok(0)
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 /// futex 系统调用实现
 /// uaddr_user_ptr: 指向用户空间 futex 字 (u32) 的指针。
@@ -1220,8 +1264,8 @@ pub async fn sys_mprotect( start: usize, size: usize, flags: usize)->SyscallRet 
 ///   - 对于 FUTEX_WAIT (带超时): 指向用户空间 UserTimeSpec 的指针 (usize)。
 ///   - 对于 FUTEX_WAKE: 要唤醒的任务数量 (usize)。
 ///   - 对于不带超时的 FUTEX_WAIT: 可以是0。
-/// uaddr2_user_ptr: 
-/// val3: 
+/// uaddr2_user_ptr:
+/// val3:
 pub async fn sys_futex(
     uaddr_user_ptr: *mut u32,
     futex_op_full: i32,
@@ -1230,9 +1274,9 @@ pub async fn sys_futex(
     uaddr2_user_ptr: *mut u32,
     bitmask_or_val3: u32,
 ) -> SyscallRet {
-       let pcb_arc = current_process();
+    let pcb_arc = current_process();
     let tid = current_task_id();
-info!(
+    info!(
         "[sys_futex] uaddr_user_ptr: {:#x}, futex_op_full: {:#x} ({}), val_or_count: {}, \
         val2_timeout_ptr_or_num_requeue: {:#x}, uaddr2_user_ptr: {:#x}, bitmask_or_val3: {:#x},tid:{}",
         uaddr_user_ptr as usize,
@@ -1245,33 +1289,39 @@ info!(
         tid,
     );
 
-   if handle_pending_signals(Some(0)).await{
-      return Err(SysErrNo::ERESTART)
-   }
-    pcb_arc.manual_alloc_type_for_lazy(uaddr_user_ptr  ).await?;
+    if handle_pending_signals(Some(0)).await {
+        return Err(SysErrNo::ERESTART);
+    }
+    pcb_arc.manual_alloc_type_for_lazy(uaddr_user_ptr).await?;
     let token = pcb_arc.memory_set.lock().await.token();
-    
+
     if uaddr_user_ptr.is_null() || (uaddr_user_ptr as usize % core::mem::align_of::<u32>() != 0) {
         return Err(SysErrNo::EFAULT);
     }
     let uaddr_usize = uaddr_user_ptr as usize;
     let futex_key: FutexKey = (token, uaddr_usize);
-    
+
     let op_cmd = futex_op_full & !(FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME) as i32;
     let use_clock_realtime = (futex_op_full & FUTEX_CLOCK_REALTIME as i32) != 0;
 
     match op_cmd {
         FUTEX_REQUEUE => {
-            debug!("futex_requeue: uaddr1:{:#x} -> uaddr2:{:#x}", uaddr_usize, uaddr2_user_ptr as usize);
+            debug!(
+                "futex_requeue: uaddr1:{:#x} -> uaddr2:{:#x}",
+                uaddr_usize, uaddr2_user_ptr as usize
+            );
 
             // 校验 uaddr2
-            if uaddr2_user_ptr.is_null() || (uaddr2_user_ptr as usize % core::mem::align_of::<u32>() != 0) {
+            if uaddr2_user_ptr.is_null()
+                || (uaddr2_user_ptr as usize % core::mem::align_of::<u32>() != 0)
+            {
                 return Err(SysErrNo::EFAULT);
             }
             pcb_arc.manual_alloc_type_for_lazy(uaddr2_user_ptr).await?;
             let uaddr2_usize = uaddr2_user_ptr as usize;
             let futex_key2: FutexKey = (token, uaddr2_usize);
-            if futex_key == futex_key2 { // 不能 requeue 到自己
+            if futex_key == futex_key2 {
+                // 不能 requeue 到自己
                 return Err(SysErrNo::EINVAL);
             }
 
@@ -1284,7 +1334,7 @@ info!(
             let mut futex_system = GLOBAL_FUTEX_SYSTEM.lock();
             let mut woken_count = 0;
             let mut requeued_count = 0;
-            
+
             // 1. 唤醒 uaddr1 上的等待者
             if num_to_wake > 0 {
                 if let Some(wait_queue1) = futex_system.get_mut(&futex_key) {
@@ -1292,7 +1342,7 @@ info!(
                     woken_count = wait_queue1.wake_matching_waiters(num_to_wake, u32::MAX);
                 }
             }
-            
+
             // 2. 将 uaddr1 上的剩余等待者移动到 uaddr2
             if num_to_requeue > 0 {
                 // 使用你已经实现的 drain_waiters 和 enqueue_waiters
@@ -1304,7 +1354,7 @@ info!(
                     drained
                 } else {
                     // 确保返回与 drain_waiters 相同的类型 (LinkedList)
-                    LinkedList::new() 
+                    LinkedList::new()
                 };
 
                 requeued_count = waiters_to_move.len();
@@ -1313,20 +1363,24 @@ info!(
                     wait_queue2.enqueue_waiters(waiters_to_move);
                 }
             }
-            
-            Ok(woken_count + requeued_count )
+
+            Ok(woken_count + requeued_count)
         }
         FUTEX_WAIT | FUTEX_WAIT_BITSET => {
+            debug!("wait futex addr :{:#x},tid:{}", uaddr_usize, tid);
 
-            
-            debug!("wait futex addr :{:#x},tid:{}",uaddr_usize,tid);
-            
             let expected_val = val_or_count;
-            let wait_bitmask = if op_cmd == FUTEX_WAIT_BITSET { bitmask_or_val3 } else { u32::MAX };
-
-            let current_val_in_user_initial_check =* match unsafe {  get_target_ref(token, uaddr_user_ptr ) } {
-                Ok(v) => v, Err(e) => return Err(e.into()),
+            let wait_bitmask = if op_cmd == FUTEX_WAIT_BITSET {
+                bitmask_or_val3
+            } else {
+                u32::MAX
             };
+
+            let current_val_in_user_initial_check =
+                *match unsafe { get_target_ref(token, uaddr_user_ptr) } {
+                    Ok(v) => v,
+                    Err(e) => return Err(e.into()),
+                };
             if current_val_in_user_initial_check != expected_val {
                 return Err(SysErrNo::EAGAIN);
             }
@@ -1334,19 +1388,32 @@ info!(
             let timeout_ptr = val2_timeout_ptr_or_num_requeue;
 
             let timespec_user_ptr = timeout_ptr as *const UserTimeSpec;
-            let deadline_opt: Option<TimeVal> = if timeout_ptr == 0||
-            pcb_arc.manual_alloc_type_for_lazy(timespec_user_ptr).await.is_err() { None }
-            else {
+            let deadline_opt: Option<TimeVal> = if timeout_ptr == 0
+                || pcb_arc
+                    .manual_alloc_type_for_lazy(timespec_user_ptr)
+                    .await
+                    .is_err()
+            {
+                None
+            } else {
                 let timeout_spec = match unsafe { get_target_ref(token, timespec_user_ptr) } {
                     Ok(ts) => ts,
-                     Err(e) => return Err(e.into()),
+                    Err(e) => return Err(e.into()),
                 };
-                if (timeout_spec.tv_nsec as isize) < 0 || timeout_spec.tv_nsec >= 1_000_000_000 ||
-                   (use_clock_realtime && (timeout_spec.tv_sec as isize) < 0) ||
-                   (!use_clock_realtime && (timeout_spec.tv_sec as isize) < 0 && (timeout_spec.tv_sec as isize == -1 && timeout_spec.tv_nsec != 0 || (timeout_spec.tv_sec as isize)< -1))
-                { return Err(SysErrNo::EINVAL); }
+                if (timeout_spec.tv_nsec as isize) < 0
+                    || timeout_spec.tv_nsec >= 1_000_000_000
+                    || (use_clock_realtime && (timeout_spec.tv_sec as isize) < 0)
+                    || (!use_clock_realtime
+                        && (timeout_spec.tv_sec as isize) < 0
+                        && (timeout_spec.tv_sec as isize == -1 && timeout_spec.tv_nsec != 0
+                            || (timeout_spec.tv_sec as isize) < -1))
+                {
+                    return Err(SysErrNo::EINVAL);
+                }
 
-                if timeout_spec.tv_sec == 0 && timeout_spec.tv_nsec == 0 { return Ok(0); } // 0超时，值匹配，立即成功
+                if timeout_spec.tv_sec == 0 && timeout_spec.tv_nsec == 0 {
+                    return Ok(0);
+                } // 0超时，值匹配，立即成功
 
                 if use_clock_realtime {
                     // FIXME: 正确实现绝对超时从 UserTimeSpec 到内核 TimeVal 的转换
@@ -1358,7 +1425,11 @@ info!(
             };
 
             let futex_wait_internal_future = FutexWaitInternalFuture::new(
-                token, uaddr_usize, expected_val, wait_bitmask, deadline_opt,
+                token,
+                uaddr_usize,
+                expected_val,
+                wait_bitmask,
+                deadline_opt,
             );
             match futex_wait_internal_future.await {
                 Ok(()) => Ok(0),
@@ -1367,11 +1438,16 @@ info!(
         }
 
         FUTEX_WAKE | FUTEX_WAKE_BITSET => {
-            
-            debug!("waker futex addr :{:#x},tid:{}",uaddr_usize,tid);
+            debug!("waker futex addr :{:#x},tid:{}", uaddr_usize, tid);
             let num_to_wake = val_or_count as usize;
-            if num_to_wake == 0 { return Ok(0); }
-            let wake_bitmask = if op_cmd == FUTEX_WAKE_BITSET { bitmask_or_val3 } else { u32::MAX };
+            if num_to_wake == 0 {
+                return Ok(0);
+            }
+            let wake_bitmask = if op_cmd == FUTEX_WAKE_BITSET {
+                bitmask_or_val3
+            } else {
+                u32::MAX
+            };
 
             let mut futex_system_guard = GLOBAL_FUTEX_SYSTEM.lock();
             let woken_count = if let Some(wait_queue) = futex_system_guard.get_mut(&futex_key) {
@@ -1380,23 +1456,29 @@ info!(
                     futex_system_guard.remove(&futex_key);
                 }
                 count
-            } else { 0 };
-       
-       
+            } else {
+                0
+            };
 
             Ok(woken_count)
         }
         FUTEX_CMP_REQUEUE => {
-            debug!("futex_cmp_requeue: uaddr1:{:#x} -> uaddr2:{:#x}", uaddr_usize, uaddr2_user_ptr as usize);
+            debug!(
+                "futex_cmp_requeue: uaddr1:{:#x} -> uaddr2:{:#x}",
+                uaddr_usize, uaddr2_user_ptr as usize
+            );
 
             // 校验 uaddr2
-            if uaddr2_user_ptr.is_null() || (uaddr2_user_ptr as usize % core::mem::align_of::<u32>() != 0) {
+            if uaddr2_user_ptr.is_null()
+                || (uaddr2_user_ptr as usize % core::mem::align_of::<u32>() != 0)
+            {
                 return Err(SysErrNo::EFAULT);
             }
             pcb_arc.manual_alloc_type_for_lazy(uaddr2_user_ptr).await?;
             let uaddr2_usize = uaddr2_user_ptr as usize;
             let futex_key2: FutexKey = (token, uaddr2_usize);
-            if futex_key == futex_key2 { // 不能 requeue到自己
+            if futex_key == futex_key2 {
+                // 不能 requeue到自己
                 return Err(SysErrNo::EINVAL);
             }
 
@@ -1407,7 +1489,8 @@ info!(
             // 原子性检查：如果值不匹配，立即返回 EAGAIN
             // 这是 CMP_REQUEUE 的核心，防止丢失唤醒
             let current_val = *match unsafe { get_target_ref(token, uaddr_user_ptr) } {
-                Ok(v) => v, Err(e) => return Err(e.into()),
+                Ok(v) => v,
+                Err(e) => return Err(e.into()),
             };
             if current_val != expected_val {
                 return Err(SysErrNo::EAGAIN);
@@ -1416,14 +1499,14 @@ info!(
             let mut futex_system = GLOBAL_FUTEX_SYSTEM.lock();
             let mut woken_count = 0;
             let mut requeued_count = 0;
-            
+
             // 1. 唤醒 uaddr1 上的等待者
             if num_to_wake > 0 {
                 if let Some(wait_queue1) = futex_system.get_mut(&futex_key) {
                     woken_count = wait_queue1.wake_matching_waiters(num_to_wake, u32::MAX);
                 }
             }
-            
+
             // 2. 将 uaddr1 上的剩余等待者移动到 uaddr2
             if num_to_requeue > 0 {
                 // 为了避免 borrow checker 问题 (同时修改两个 hashmap entry)
@@ -1444,15 +1527,20 @@ info!(
                     wait_queue2.enqueue_waiters(waiters_to_move);
                 }
             }
-            
-            Ok(woken_count + requeued_count )
+
+            Ok(woken_count + requeued_count)
         }
-        
+
         FUTEX_WAKE_OP => {
-            debug!("futex_wake_op: uaddr1:{:#x}, uaddr2:{:#x}", uaddr_usize, uaddr2_user_ptr as usize);
-            
+            debug!(
+                "futex_wake_op: uaddr1:{:#x}, uaddr2:{:#x}",
+                uaddr_usize, uaddr2_user_ptr as usize
+            );
+
             // 校验 uaddr2
-            if uaddr2_user_ptr.is_null() || (uaddr2_user_ptr as usize % core::mem::align_of::<u32>() != 0) {
+            if uaddr2_user_ptr.is_null()
+                || (uaddr2_user_ptr as usize % core::mem::align_of::<u32>() != 0)
+            {
                 return Err(SysErrNo::EFAULT);
             }
             pcb_arc.manual_alloc_type_for_lazy(uaddr2_user_ptr).await?;
@@ -1462,21 +1550,22 @@ info!(
             let num_wake_uaddr2 = val_or_count as usize;
             let num_wake_uaddr1 = val2_timeout_ptr_or_num_requeue as usize;
             let op_encoded = bitmask_or_val3;
-            
+
             // 解码 val3
             let op_type = (op_encoded >> 28) & 0xF;
             let cmp_type = (op_encoded >> 24) & 0xF;
             let op_arg = (op_encoded >> 12) & 0xFFF;
             let cmp_arg = op_encoded & 0xFFF;
-            
+
             let mut total_woken = 0;
-            
+
             // 整个操作必须是原子的，所以要锁住 futex system
             let mut futex_system = GLOBAL_FUTEX_SYSTEM.lock();
-            
+
             // 在锁内进行用户内存访问
             let uaddr1_val_ref = match unsafe { translated_refmut(token, uaddr_user_ptr) } {
-                Ok(v) => v, Err(e) => return Err(e.into()),
+                Ok(v) => v,
+                Err(e) => return Err(e.into()),
             };
             let old_val = *uaddr1_val_ref;
 
@@ -1490,48 +1579,47 @@ info!(
                 FUTEX_OP_CMP_GE => (old_val as i32) >= (cmp_arg as i32),
                 _ => return Err(SysErrNo::EINVAL), // 无效的比较类型
             };
-            
+
             if condition_met {
                 // 2. 执行操作
                 let new_val = match op_type {
-                    FUTEX_OP_SET  => op_arg,
-                    FUTEX_OP_ADD  => old_val.wrapping_add(op_arg),
-                    FUTEX_OP_OR   => old_val | op_arg,
+                    FUTEX_OP_SET => op_arg,
+                    FUTEX_OP_ADD => old_val.wrapping_add(op_arg),
+                    FUTEX_OP_OR => old_val | op_arg,
                     FUTEX_OP_ANDN => old_val & !op_arg,
-                    FUTEX_OP_XOR  => old_val ^ op_arg,
+                    FUTEX_OP_XOR => old_val ^ op_arg,
                     _ => return Err(SysErrNo::EINVAL), // 无效的操作类型
                 };
                 *uaddr1_val_ref = new_val;
-                
+
                 // 3. 唤醒 uaddr1 上的等待者
                 if num_wake_uaddr1 > 0 {
                     if let Some(wq1) = futex_system.get_mut(&futex_key) {
                         total_woken += wq1.wake_matching_waiters(num_wake_uaddr1, u32::MAX);
                     }
                 }
-                
+
                 // 4. 唤醒 uaddr2 上的等待者
                 if num_wake_uaddr2 > 0 {
-                     if let Some(wq2) = futex_system.get_mut(&futex_key2) {
+                    if let Some(wq2) = futex_system.get_mut(&futex_key2) {
                         total_woken += wq2.wake_matching_waiters(num_wake_uaddr2, u32::MAX);
                     }
                 }
             }
-            
-            Ok(total_woken )
+
+            Ok(total_woken)
         }
         _ => Err(SysErrNo::ENOSYS),
     }
 }
 
-
-pub async  fn sys_mremap(
-    old_address: *mut u8,   // void* → *mut u8
-    old_size: usize,        // size_t → usize
-    new_size: usize,        // size_t → usize
-    flags: u32,             // int → i32
+pub async fn sys_mremap(
+    old_address: *mut u8, // void* → *mut u8
+    old_size: usize,      // size_t → usize
+    new_size: usize,      // size_t → usize
+    flags: u32,           // int → i32
     new_address: *mut u8, //仅当 MREMAP_FIXED 时使用
-) ->SyscallRet {
+) -> SyscallRet {
     trace!(
         "[sys_mremap] old_addr = {:p}, old_size = {}, new_size = {}, flags = {:#x}, new_addr = {:p}",
         old_address,
@@ -1539,22 +1627,22 @@ pub async  fn sys_mremap(
         new_size,
         flags,
         new_address,
-    ); 
-    let flags= MremapFlags::from_bits(flags).unwrap();
+    );
+    let flags = MremapFlags::from_bits(flags).unwrap();
     let old_start = old_address as usize;
-    let proc= current_process();
-    
-    let x = proc.memory_set.lock().await.mremap(old_start.into(), old_size, new_size,flags).await; 
-    x
+    let proc = current_process();
 
+    let x = proc
+        .memory_set
+        .lock()
+        .await
+        .mremap(old_start.into(), old_size, new_size, flags)
+        .await;
+    x
 }
 
-
-
-
-
 pub async fn sys_sched_yield() -> SyscallRet {
-     yield_now().await;
+    yield_now().await;
     Ok(0)
 }
 
@@ -1588,8 +1676,6 @@ pub fn sys_setsid() -> SyscallRet {
     Ok(0)
 }
 
-
-
 pub static CUR_UID: Lazy<spin::mutex::Mutex<u32>> = Lazy::new(|| spin::mutex::Mutex::new(0));
 
 pub fn current_uid() -> u32 {
@@ -1600,22 +1686,18 @@ pub fn change_current_uid(uid: u32) {
     *CUR_UID.lock() = uid;
 }
 
-pub fn sys_membarrier()->SyscallRet{
+pub fn sys_membarrier() -> SyscallRet {
     Ok(0)
 }
 
-pub async  fn sys_madvise(
-    addr: usize,
-    len: usize,
-    advice: u32,
-) -> SyscallRet {
+pub async fn sys_madvise(addr: usize, len: usize, advice: u32) -> SyscallRet {
     trace!(
         "[sys_madvise] addr: {:#x}, len: {}, advice: {}",
         addr,
         len,
         advice
     );
-     // 1. 检查地址合法性和页对齐
+    // 1. 检查地址合法性和页对齐
     // According to POSIX, `addr` must be page-aligned.
     let start_va: VirtAddr = addr.into();
     if start_va.page_offset() != 0 {
@@ -1634,21 +1716,19 @@ pub async  fn sys_madvise(
             // MEMORY_END is the boundary of physical memory, also serving as the upper
             // limit for user virtual addresses in many rCore-like designs.
             if end > MEMORY_END {
-        return Err(SysErrNo::ENOMEM);
-
+                return Err(SysErrNo::ENOMEM);
             }
             end
         }
-        None => 
-        return Err(SysErrNo::EINVAL),
-   // Overflow occurred
+        None => return Err(SysErrNo::EINVAL),
+        // Overflow occurred
     };
 
     debug!(
         "[sys_madvise](addr: {:#x}, len: {}, advice: {})",
         addr, len, advice
     );
-    
+
     // 获取当前任务的内存管理结构体 (MemorySet)
     // 在 rCore 中，这个操作是线程安全的，因为它返回一个 Arc<TaskControlBlock>
     let proc = current_process();
@@ -1676,7 +1756,7 @@ pub async  fn sys_madvise(
             // containing `addr + len - 1`.
             let start_vpn = start_va.floor();
             let end_vpn = VirtAddr::from(end_addr - 1).floor();
-            
+
             debug!(
                 "[sys_madvise](MADV_DONTNEED): unmapping range [{:?}, {:?}]",
                 start_vpn, end_vpn
@@ -1695,25 +1775,26 @@ pub async  fn sys_madvise(
         _ => {
             warn!("sys_madvise: unsupported advice value {}.", advice);
 
-        return Err(SysErrNo::EINVAL);
+            return Err(SysErrNo::EINVAL);
         }
     }
 }
 
-
-
-
 /// man 2: int get_mempolicy(int *mode, unsigned long *nodemask, unsigned long maxnode, void *addr, int flags);
-pub async   fn sys_get_mempolicy(
+pub async fn sys_get_mempolicy(
     mode_ptr: *mut i32,
     nodemask_ptr: *mut usize,
     maxnode: usize,
     _addr: usize, // 我们忽略 addr 和 flags，因为策略是 per-process 的
     _flags: i32,
-) ->  SyscallRet {
+) -> SyscallRet {
     trace!(
         "[sys__get_mempolicy] policy: {:p}, nmask: {:p}, maxnode: {}, addr: {}, flags: {}",
-        mode_ptr, nodemask_ptr, maxnode, _addr, _flags
+        mode_ptr,
+        nodemask_ptr,
+        maxnode,
+        _addr,
+        _flags
     );
     let task = current_task();
     let token = current_token().await;
@@ -1726,7 +1807,7 @@ pub async   fn sys_get_mempolicy(
     drop(proc);
     if !mode_ptr.is_null() {
         if let Ok(user_mode) = translated_refmut(token, mode_ptr) {
-            *user_mode =task.get_noma_policy() as i32;
+            *user_mode = task.get_noma_policy() as i32;
         } else {
             return Err(SysErrNo::EFAULT);
         }
@@ -1735,19 +1816,20 @@ pub async   fn sys_get_mempolicy(
     // 2. 写回 nodemask
     if !nodemask_ptr.is_null() {
         if maxnode < 1 {
-            return Err(SysErrNo::EINVAL);// 用户提供的 buffer 太小
+            return Err(SysErrNo::EINVAL); // 用户提供的 buffer 太小
         }
         // 我们唯一的 node 是 "node 0", 对应的 mask 是 1
         if let Ok(user_mask) = translated_refmut(token, nodemask_ptr) {
-            *user_mask = 1; 
+            *user_mask = 1;
         } else {
             return Err(SysErrNo::EFAULT);
         }
         // 如果 maxnode 很大，还需要清零其余部分
         if maxnode > usize::BITS as usize {
             let buffer_size = (maxnode as usize + 7) / 8; // bytes
-            let nodemask_bytes = translated_byte_buffer(token, nodemask_ptr as *const u8, buffer_size);
-            
+            let nodemask_bytes =
+                translated_byte_buffer(token, nodemask_ptr as *const u8, buffer_size);
+
             let mut offset = core::mem::size_of::<usize>();
             for buf in nodemask_bytes {
                 if offset > 0 {
@@ -1761,18 +1843,24 @@ pub async   fn sys_get_mempolicy(
         }
     }
 
-    Ok(0) 
+    Ok(0)
 
     // 目前不支持 NUMA 策略
 }
 /// man 2: int set_mempolicy(int mode, const unsigned long *nodemask, unsigned long maxnode);
-pub async  fn sys_set_mempolicy(mode: usize, nodemask_ptr: *const usize, maxnode: usize) -> SyscallRet {
+pub async fn sys_set_mempolicy(
+    mode: usize,
+    nodemask_ptr: *const usize,
+    maxnode: usize,
+) -> SyscallRet {
     trace!(
         "[sys__set_mempolicy] policy: {}, nmask: {:p}, maxnode: {}",
-        mode, nodemask_ptr, maxnode
+        mode,
+        nodemask_ptr,
+        maxnode
     );
-     // 1. 验证 mode
-     if !(MPOL_DEFAULT..=MPOL_PREFERRED).contains(&mode) {
+    // 1. 验证 mode
+    if !(MPOL_DEFAULT..=MPOL_PREFERRED).contains(&mode) {
         return Err(SysErrNo::EINVAL);
     }
 
@@ -1781,15 +1869,15 @@ pub async  fn sys_set_mempolicy(mode: usize, nodemask_ptr: *const usize, maxnode
         MPOL_BIND => {
             // BIND 策略要求 nodemask 必须非空，且只能指向我们唯一的 "node 0"
             if nodemask_ptr.is_null() {
-                
-        return Err(SysErrNo::EINVAL);
-
+                return Err(SysErrNo::EINVAL);
             }
             // 验证 maxnode 至少能覆盖到 node 0
             if maxnode < 1 {
                 return Err(SysErrNo::EINVAL);
             }
-            current_process().manual_alloc_type_for_lazy(nodemask_ptr).await?;
+            current_process()
+                .manual_alloc_type_for_lazy(nodemask_ptr)
+                .await?;
             // 从用户空间安全读取 nodemask
             let nodemask = if let Ok(val) = get_target_ref(current_token().await, nodemask_ptr) {
                 *val
@@ -1811,11 +1899,8 @@ pub async  fn sys_set_mempolicy(mode: usize, nodemask_ptr: *const usize, maxnode
     // 3. 更新任务的策略
     current_task().set_noma_policy(mode);
 
-    Ok(0) 
+    Ok(0)
 }
-
-
-
 
 /// getrusage(2) 的 `who` 参数
 #[repr(i32)]
@@ -1881,8 +1966,7 @@ pub async fn sys_getrusage(who: i32, usage_ptr: *mut Rusage) -> SyscallRet {
     // 2. 获取当前进程的锁
     let pcb = current_process();
 
-    
-    let token =pcb.memory_set.lock().await.token();
+    let token = pcb.memory_set.lock().await.token();
     pcb.manual_alloc_type_for_lazy(usage_ptr).await?;
     let task = current_task();
     let tms = unsafe { *task.tms.get() };
@@ -1890,25 +1974,34 @@ pub async fn sys_getrusage(who: i32, usage_ptr: *mut Rusage) -> SyscallRet {
     let rusage_data = match rusage_target {
         RusageWho::Self_ | RusageWho::Thread => {
             Rusage {
-                ru_utime:TimeVal { sec:tms.utime as usize, usec: 0},
-                ru_stime:TimeVal { sec:tms.stime as usize, usec: 0},
+                ru_utime: TimeVal {
+                    sec: tms.utime as usize,
+                    usec: 0,
+                },
+                ru_stime: TimeVal {
+                    sec: tms.stime as usize,
+                    usec: 0,
+                },
                 // 其他字段暂时填充为0
                 ..Default::default()
             }
         }
         RusageWho::Children => {
             Rusage {
-                ru_utime:TimeVal { sec:tms.utime as usize, usec: 0},
-                ru_stime:TimeVal { sec:tms.stime as usize, usec: 0},
+                ru_utime: TimeVal {
+                    sec: tms.utime as usize,
+                    usec: 0,
+                },
+                ru_stime: TimeVal {
+                    sec: tms.stime as usize,
+                    usec: 0,
+                },
                 // 子进程的其他统计信息通常也需要累加，这里简化
                 ..Default::default()
             }
         }
     };
-     *translated_refmut(token, usage_ptr)?= rusage_data;
-
-   
-
+    *translated_refmut(token, usage_ptr)? = rusage_data;
 
     Ok(0) // 成功返回 0
 }
@@ -1916,9 +2009,9 @@ pub async fn sys_getrusage(who: i32, usage_ptr: *mut Rusage) -> SyscallRet {
 /// 它接收内核态的 SigSet 引用，并返回旧的掩码。
 /// 这个函数是异步的，因为它需要锁定任务的 signal_state。
 pub async fn do_sigprocmask(how: SigMaskHow, set: Option<SigSet>) -> Result<SigSet, SysErrNo> {
-    let current_task_arc = current_task(); 
+    let current_task_arc = current_task();
     let mut signal_state = current_task_arc.signal_state.lock().await;
-    
+
     // 1. 保存旧的掩码，用于返回
     let old_mask = signal_state.sigmask;
 
@@ -1929,7 +2022,7 @@ pub async fn do_sigprocmask(how: SigMaskHow, set: Option<SigSet>) -> Result<SigS
                 signal_state.sigmask.union_with(&new_set);
             }
             SigMaskHow::SIG_UNBLOCK => {
-                // 不能解除 SIGKILL 或 SIGSTOP 的阻塞 
+                // 不能解除 SIGKILL 或 SIGSTOP 的阻塞
                 // 但 SigSet 的操作通常不关心具体信号的特殊性，这是更高层逻辑
                 let mut temp_set = new_set;
                 // Linux 不允许 SIGKILL 和 SIGSTOP 被阻塞，所以从 set 中移除它们
@@ -1977,9 +2070,9 @@ pub async fn sys_pselect6(
 ) -> SyscallRet {
     trace!("[sys_pselect6] nfds: {}, readfds: {:p}, writefds: {:p}, exceptfds: {:p}, timeout: {:p}, sigmask: {:p}",
         nfds, readfds_ptr, writefds_ptr, exceptfds_ptr, timeout_ptr, sigmask_ptr);
-    if handle_pending_signals(Some(0)).await{
-            return Err(SysErrNo::ERESTART)
-        }
+    if handle_pending_signals(Some(0)).await {
+        return Err(SysErrNo::ERESTART);
+    }
     if nfds < 0 {
         return Err(SysErrNo::EINVAL);
     }
@@ -1992,87 +2085,92 @@ pub async fn sys_pselect6(
     let process = current_process();
     let token = process.get_user_token().await;
 
-    let readfds   = if readfds_ptr.is_null() {
+    let readfds = if readfds_ptr.is_null() {
         None
     } else {
-
-    process.manual_alloc_type_for_lazy(readfds_ptr).await?;
+        process.manual_alloc_type_for_lazy(readfds_ptr).await?;
         Some(get_target_ref(token, readfds_ptr)?)
     };
-    
-    let writefds  = if writefds_ptr.is_null() {
+
+    let writefds = if writefds_ptr.is_null() {
         None
     } else {
-
-    process.manual_alloc_type_for_lazy(writefds_ptr).await?;
+        process.manual_alloc_type_for_lazy(writefds_ptr).await?;
         Some(get_target_ref(token, writefds_ptr)?)
     };
-    
+
     let exceptfds = if exceptfds_ptr.is_null() {
         None
     } else {
-
-    process.manual_alloc_type_for_lazy(exceptfds_ptr).await?;
+        process.manual_alloc_type_for_lazy(exceptfds_ptr).await?;
         Some(get_target_ref(token, exceptfds_ptr)?)
     };
-    
-    let timeout   = if timeout_ptr.is_null() {
+
+    let timeout = if timeout_ptr.is_null() {
         None
     } else {
-
-    process.manual_alloc_type_for_lazy(timeout_ptr).await?;
+        process.manual_alloc_type_for_lazy(timeout_ptr).await?;
         Some(get_target_ref(token, timeout_ptr)?)
     };
-    
+
     // --- 信号掩码处理 ---
     let mut original_sigmask: Option<SigSet> = None;
     if !sigmask_ptr.is_null() {
         // 从用户空间拷贝新的掩码
-        let new_mask = *get_target_ref(token, sigmask_ptr)?
-            ; // pselect 要求 sigmask 非 NULL 时必须有效
+        let new_mask = *get_target_ref(token, sigmask_ptr)?; // pselect 要求 sigmask 非 NULL 时必须有效
 
         // 调用内核内部函数，原子地替换信号掩码，并保存旧的
         // 这里我们总是使用 SetMask
         original_sigmask = Some(do_sigprocmask(SigMaskHow::SIG_SETMASK, Some(new_mask)).await?);
     }
-    
 
-        // 1. 收集所有需要检查的 FD
-        let mut fds_to_check: Vec<(usize, FileDescriptor)> = Vec::new();
-        for fd in 0..nfds_usize {
-            let mut check_this_fd = false;
-            if let Some(ref set) = readfds   { if set.is_set(fd) { check_this_fd = true; } }
-            if let Some(ref set) = writefds  { if set.is_set(fd) { check_this_fd = true; } }
-            if let Some(ref set) = exceptfds { if set.is_set(fd) { check_this_fd = true; } }
-            
-            if check_this_fd {
-                match process.get_file(fd).await {
-                    Ok(file) => fds_to_check.push((fd, file)),
-                    Err(e) => {
-                        error!("pselect6: inviild FD {}: {:?}", fd, e);
-                        return Err(e)}, // 无效的 FD
-                }
+    // 1. 收集所有需要检查的 FD
+    let mut fds_to_check: Vec<(usize, FileDescriptor)> = Vec::new();
+    for fd in 0..nfds_usize {
+        let mut check_this_fd = false;
+        if let Some(ref set) = readfds {
+            if set.is_set(fd) {
+                check_this_fd = true;
+            }
+        }
+        if let Some(ref set) = writefds {
+            if set.is_set(fd) {
+                check_this_fd = true;
+            }
+        }
+        if let Some(ref set) = exceptfds {
+            if set.is_set(fd) {
+                check_this_fd = true;
             }
         }
 
-        // 2. 计算超时 deadline
-        let deadline = timeout.map(|spec| {
-            let now = get_usertime();
-            // 计算绝对截止时间
-            now + *spec 
+        if check_this_fd {
+            match process.get_file(fd).await {
+                Ok(file) => fds_to_check.push((fd, file)),
+                Err(e) => {
+                    error!("pselect6: inviild FD {}: {:?}", fd, e);
+                    return Err(e);
+                } // 无效的 FD
+            }
+        }
+    }
 
-        });
-        
+    // 2. 计算超时 deadline
+    let deadline = timeout.map(|spec| {
+        let now = get_usertime();
+        // 计算绝对截止时间
+        now + *spec
+    });
 
-        // 3. 创建并 await future
-        let future = PSelectFuture::new(
-            fds_to_check,
-            readfds_ptr,
-            writefds_ptr,
-            exceptfds_ptr,
-            token,
-            deadline, // 直接传递计算好的 Option<TimeVal>
-        );
+    // 3. 创建并 await future
+    let future = PSelectFuture::new(
+        fds_to_check,
+        readfds_ptr,
+        writefds_ptr,
+        exceptfds_ptr,
+        token,
+        deadline, // 直接传递计算好的 Option<TimeVal>
+    );
     let result = future.await;
 
     // --- 恢复信号掩码 ---
@@ -2083,7 +2181,5 @@ pub async fn sys_pselect6(
     }
 
     // --- 返回最终结果 ---
-     return result;
+    return result;
 }
-
-

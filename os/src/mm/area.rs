@@ -8,7 +8,10 @@ use linux_raw_sys::general::SEEK_CUR;
 use lwext4_rust::bindings::SEEK_SET;
 
 use crate::{
-    config::{KERNEL_PGNUM_OFFSET, MMAP_BASE, MMAP_PGNUM_TOP, MMAP_TOP, PAGE_SIZE, PAGE_SIZE_BITS, USER_STACK_TOP},
+    config::{
+        KERNEL_PGNUM_OFFSET, MMAP_BASE, MMAP_PGNUM_TOP, MMAP_TOP, PAGE_SIZE, PAGE_SIZE_BITS,
+        USER_STACK_TOP,
+    },
     fs::{File, FileDescriptor, OsInode},
     mm::StepByOne,
     syscall::flags::MmapProt,
@@ -16,7 +19,8 @@ use crate::{
 };
 
 use super::{
-    flush_all, frame_alloc, PTEFlags, FrameTracker, PageTable, PhysPageNum, VPNRange, VirtAddr, VirtPageNum
+    flush_all, frame_alloc, FrameTracker, PTEFlags, PageTable, PhysPageNum, VPNRange, VirtAddr,
+    VirtPageNum,
 };
 
 /// 虚拟内存区域树：Key 按照 Range.start_vpn 排序
@@ -39,7 +43,6 @@ impl DerefMut for VmAreaTree {
 impl VmAreaTree {
     pub fn push(&mut self, area: MapArea) {
         // trace!("[VmAreaTree] push area: l:{:#x} r:{:#x}",area.vpn_range.get_start().0,area.vpn_range.get_end().0 );
-
 
         self.areas.insert(area.vpn_range.get_start(), area);
     }
@@ -70,15 +73,54 @@ impl VmAreaTree {
         self.areas.insert(start_vpn, area);
         Ok(())
     }
+    /// 按 align_pages（以页为单位）做对齐，从 hint_vpn 开始分配 npages。
+    pub fn alloc_aligned_pages(
+        &self,
+        npages: usize,
+        align_pages: usize,
+        hint_vpn: VirtPageNum,
+    ) -> Option<VirtPageNum> {
+        // 先将 hint_vpn 向上取整到 align_pages 的边界
+        let mut candidate = {
+            let v = hint_vpn.0;
+            let rem = v % align_pages;
+            if rem == 0 {
+                hint_vpn.0
+            } else {
+                v + (align_pages - rem)
+            }
+        };
+        loop {
+            // 用原 alloc_pages_from_hint 尝试一次
+            if let Some(start) = self.alloc_pages_from_hint(npages, VirtPageNum(candidate)) {
+                // alloc_pages_from_hint 返回的位置可能 < candidate（因为它只保证 ≥ hint）
+                // 所以我们得再检查一下对齐：
+                if start.0 % align_pages == 0 {
+                    return Some(start);
+                }
+                // 如果返回了一个不对齐的位置，就以那个位置为新的 hint 继续
+                candidate = start.0;
+            }
+
+            // 如果第一次没拿到，或者拿到的位置不对齐，就跳到下一个对齐点继续
+            candidate = ((candidate + align_pages - 1) / align_pages) * align_pages;
+
+            // 防止 candidate 太大溢出或超过某个上限（比如 MMAP_TOP/PAGE_SIZE）
+            if candidate > MMAP_TOP / PAGE_SIZE {
+                break;
+            }
+        }
+        None
+    }
     pub fn alloc_pages_from_hint(
-        &self, 
+        &self,
         npages: usize,
         hint_vpn: VirtPageNum,
     ) -> Option<VirtPageNum> {
         // --- 1. 优先从 hint_vpn 开始向后查找 ---
 
         // 规范化 hint_vpn，确保它在合法范围内
-        let start_hint_vpn = max(hint_vpn, VirtPageNum::from(MMAP_BASE>>PAGE_SIZE_BITS));
+        let start_hint_vpn = max(hint_vpn, VirtPageNum::from(MMAP_BASE >> PAGE_SIZE_BITS));
 
         // BTreeMap::range(start..) 可以高效地找到第一个键 >= start 的项。
         // 我们用它来定位 hint 之后的所有已分配区域。
@@ -89,7 +131,7 @@ impl VmAreaTree {
             // 检查这个“空洞”是否足够大
             let gap_start_vpn = last_area_end_vpn;
             let gap_end_vpn = *area_start_vpn;
-            
+
             if gap_end_vpn.0 > gap_start_vpn.0 && // 确保空洞存在
                gap_end_vpn.0 - gap_start_vpn.0 >= npages
             {
@@ -106,8 +148,8 @@ impl VmAreaTree {
         }
 
         // 如果循环结束后，最后的区域到 MMAP_TOP 之间还有空间，也检查一下
-        if MMAP_TOP / PAGE_SIZE > last_area_end_vpn.0 &&
-           MMAP_TOP / PAGE_SIZE - last_area_end_vpn.0 >= npages
+        if MMAP_TOP / PAGE_SIZE > last_area_end_vpn.0
+            && MMAP_TOP / PAGE_SIZE - last_area_end_vpn.0 >= npages
         {
             return Some(last_area_end_vpn);
         }
@@ -121,10 +163,10 @@ impl VmAreaTree {
 
         for area in self.areas.values().rev() {
             let current_area_end_vpn = area.vpn_range.get_end();
-            
+
             // 空洞是 [current_area_end_vpn, prev_area_start_vpn)
-            if prev_area_start_vpn.0 > current_area_end_vpn.0 &&
-               prev_area_start_vpn.0 - current_area_end_vpn.0 >= npages
+            if prev_area_start_vpn.0 > current_area_end_vpn.0
+                && prev_area_start_vpn.0 - current_area_end_vpn.0 >= npages
             {
                 // 找到了一个足够大的空洞，从空洞的末尾开始分配
                 let alloc_start_vpn = VirtPageNum(prev_area_start_vpn.0 - npages);
@@ -135,13 +177,11 @@ impl VmAreaTree {
 
         // 检查最开始的一段区域 [USER_STACK_TOP, 第一个area的start)
         let final_gap_end = prev_area_start_vpn;
-        let final_gap_start = VirtPageNum::from(MMAP_BASE>>PAGE_SIZE_BITS);
-        if final_gap_end.0 > final_gap_start.0 &&
-           final_gap_end.0 - final_gap_start.0 >= npages
-        {
-             // 从空洞的末尾开始分配
-             let alloc_start_vpn = VirtPageNum(final_gap_end.0 - npages);
-             return Some(alloc_start_vpn);
+        let final_gap_start = VirtPageNum::from(MMAP_BASE >> PAGE_SIZE_BITS);
+        if final_gap_end.0 > final_gap_start.0 && final_gap_end.0 - final_gap_start.0 >= npages {
+            // 从空洞的末尾开始分配
+            let alloc_start_vpn = VirtPageNum(final_gap_end.0 - npages);
+            return Some(alloc_start_vpn);
         }
 
         None
@@ -193,7 +233,7 @@ impl VmAreaTree {
     pub fn is_fully_contained(&self, range: &Range<VirtPageNum>) -> bool {
         let mut cursor = range.start.0;
         let end = range.end.0;
-    
+
         while cursor < end {
             // 找到最后一个 vpn_range.start <= cursor 的 area
             let entry = self.areas.range(..=VirtPageNum(cursor)).next_back();
@@ -201,23 +241,23 @@ impl VmAreaTree {
                 Some(e) => e,
                 None => return false, // 没有任何区域覆盖 cursor
             };
-    
+
             let a_start = area.vpn_range.get_start().0;
             let a_end = area.vpn_range.get_end().0;
-    
+
             // ️注意是左闭右开：如果 cursor < a_start，说明有空洞；如果 cursor >= a_end，同样不在当前区间
             if cursor < a_start || cursor >= a_end {
                 return false;
             }
-    
+
             // 推进 cursor 到当前区域结尾
             cursor = a_end;
         }
-    
+
         // 成功走完所有 cursor，说明整段 range 都被覆盖
         true
     }
-    
+
     /// 检查一个页号区间是否与已存在任何区域重叠
     pub fn is_overlap(&self, range: &Range<VirtPageNum>) -> bool {
         for area in self.areas.values() {
@@ -237,15 +277,10 @@ impl VmAreaTree {
             .range(..=vpn)
             .next_back()
             .and_then(|(viddr, area)| {
-
                 // 检查该区域是否包含目标页号
                 if area.contains(vpn) {
-
                     Some(*viddr)
                 } else {
-                    
-
-                
                     None
                 }
             })
@@ -323,8 +358,8 @@ pub struct MapArea {
 }
 
 impl MapArea {
-    pub fn range_size(&self)->usize{
-        (self.vpn_range.get_end().0-self.vpn_range.get_start().0)<<PAGE_SIZE_BITS
+    pub fn range_size(&self) -> usize {
+        (self.vpn_range.get_end().0 - self.vpn_range.get_start().0) << PAGE_SIZE_BITS
     }
     ///返回已经映射过的 页大小
     pub fn size(&self) -> usize {
@@ -392,7 +427,7 @@ impl MapArea {
             mmap_flags: MmapFlags::empty(),
         }
     }
-       /// Map each provided frame to its corresponding VPN.
+    /// Map each provided frame to its corresponding VPN.
     ///
     /// # Arguments
     ///
@@ -402,11 +437,10 @@ impl MapArea {
         &mut self,
         page_table: &mut PageTable,
         frames: &BTreeMap<VirtPageNum, Arc<FrameTracker>>,
-        is_cow:bool,
+        is_cow: bool,
     ) {
         // 先获取 PTE flags
         let pte_flags = PTEFlags::from(self.map_perm);
-            
 
         // 对每对 (vpn, frame) 做映射并记录
         for (vpn, frame) in frames {
@@ -415,11 +449,10 @@ impl MapArea {
             page_table.map(*vpn, frame.ppn(), pte_flags);
             if is_cow {
                 // 如果是 COW 映射，设置相应的标志
-              let   pte=  page_table.find_pte(*vpn).unwrap();
-                    pte.set_cow();
-
+                let pte = page_table.find_pte(*vpn).unwrap();
+                pte.set_cow();
             }
-            
+
             self.data_frames.insert(*vpn, frame.clone());
         }
     }
@@ -427,17 +460,17 @@ impl MapArea {
     /// this function.
     pub fn update_flags(&mut self, flags: MapPermission, page_table: &mut PageTable) {
         self.map_perm = flags;
+
         page_table
             .update_region(self.vpn_range.get_start().into(), self.size(), flags)
             .unwrap();
     }
-    pub fn map_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) ->GeneralRet {
+    pub fn map_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) -> GeneralRet {
         let ppn: PhysPageNum;
 
         match self.map_type {
             MapType::Framed => {
-                
-                let frame = match frame_alloc(){
+                let frame = match frame_alloc() {
                     Some(f) => f,
                     None => return Err(crate::utils::error::SysErrNo::ENOMEM),
                 };
@@ -460,7 +493,7 @@ impl MapArea {
         page_table.unmap(vpn);
     }
 
-    pub fn map(&mut self, page_table: &mut PageTable)->GeneralRet {
+    pub fn map(&mut self, page_table: &mut PageTable) -> GeneralRet {
         for vpn in self.vpn_range {
             self.map_one(page_table, vpn)?
         }
@@ -471,6 +504,15 @@ impl MapArea {
             self.unmap_one(page_table, vpn);
         }
     }
+    pub fn unmap_maybe_map(&mut self, page_table: &mut PageTable) {
+        for vpn in self.vpn_range {
+            if self.data_frames.contains_key(&vpn) {
+                self.unmap_one(page_table, vpn);
+            } else {
+                page_table.clear_pte(vpn);
+            }
+        }
+    }
     #[allow(unused)]
     pub fn shrink_to(&mut self, page_table: &mut PageTable, new_end: VirtPageNum) {
         for vpn in VPNRange::new(new_end, self.vpn_range.get_end()) {
@@ -479,7 +521,7 @@ impl MapArea {
         self.vpn_range = VPNRange::new(self.vpn_range.get_start(), new_end);
     }
     #[allow(unused)]
-    pub fn append_to(&mut self, page_table: &mut PageTable, new_end: VirtPageNum)->GeneralRet {
+    pub fn append_to(&mut self, page_table: &mut PageTable, new_end: VirtPageNum) -> GeneralRet {
         for vpn in VPNRange::new(self.vpn_range.get_end(), new_end) {
             self.map_one(page_table, vpn)?
         }
@@ -568,20 +610,18 @@ impl MapArea {
                 let off = (start_vpn.raw() - self.start_vpn().raw()) << PAGE_SIZE_BITS;
                 //目前 mmap_file一定是OsInode
                 let file = mmap_file.file.file().unwrap();
-                let new_off=file.lseek(off as isize, SEEK_CUR).unwrap() ;
-                file.lseek((new_off-off) as isize, SEEK_SET).unwrap();
-                mmap_file.offset=new_off;
+                let new_off = file.lseek(off as isize, SEEK_CUR).unwrap();
+                file.lseek((new_off - off) as isize, SEEK_SET).unwrap();
+                mmap_file.offset = new_off;
                 Some(mmap_file)
             }
             None => None,
         };
 
-       
-
         // 4. 构造 mid 区域
         let mid = MapArea {
             vpn_range: VPNRange::new(start_vpn, end_vpn),
-            data_frames: mid_data_frames, 
+            data_frames: mid_data_frames,
             map_type: self.map_type,
             map_perm: self.map_perm,
             area_type: self.area_type,
@@ -595,19 +635,18 @@ impl MapArea {
                 let off = (end_vpn.raw() - self.start_vpn().raw()) << PAGE_SIZE_BITS;
                 //目前 mmap_file一定是OsInode
                 let file = mmap_file.file.file().unwrap();
-                let new_off=file.lseek(off as isize, SEEK_CUR).unwrap();
-                file.lseek((new_off-off) as isize, SEEK_SET).unwrap();
-                mmap_file.offset=new_off;
+                let new_off = file.lseek(off as isize, SEEK_CUR).unwrap();
+                file.lseek((new_off - off) as isize, SEEK_SET).unwrap();
+                mmap_file.offset = new_off;
                 Some(mmap_file)
             }
             None => None,
         };
 
-
         // 6. 构造 right 区域
         let right = MapArea {
             vpn_range: VPNRange::new(end_vpn, self.end_vpn()),
-            data_frames: right_data_frames, 
+            data_frames: right_data_frames,
             map_type: self.map_type,
             map_perm: self.map_perm,
             area_type: self.area_type,
@@ -616,7 +655,7 @@ impl MapArea {
         };
         //修改left区域
         self.vpn_range.set_end(start_vpn);
-        
+
         (mid, right)
     }
     ///将一个area拆分为两个
@@ -628,9 +667,9 @@ impl MapArea {
                 let off = (vpn.raw() - self.start_vpn().raw()) << PAGE_SIZE_BITS;
                 //目前 mmap_file一定是OsInode
                 let file = mmap_file.file.file().unwrap();
-                let new_off=file.lseek(off as isize, SEEK_CUR).unwrap() ;
-                file.lseek((new_off-off) as isize, SEEK_SET).unwrap();
-                mmap_file.offset=new_off;
+                let new_off = file.lseek(off as isize, SEEK_CUR).unwrap();
+                file.lseek((new_off - off) as isize, SEEK_SET).unwrap();
+                mmap_file.offset = new_off;
                 Some(mmap_file)
             }
             None => None,
@@ -639,7 +678,7 @@ impl MapArea {
         // 6. 构造 right 区域
         let right = MapArea {
             vpn_range: VPNRange::new(vpn, self.end_vpn()),
-            data_frames: right_data_frames, 
+            data_frames: right_data_frames,
             map_type: self.map_type,
             map_perm: self.map_perm,
             area_type: self.area_type,
@@ -676,7 +715,6 @@ bitflags! {
         ///Accessible in U mode
         const U = 1 << 4;
 
-        const D = 1<<6;
     }
 }
 
@@ -709,7 +747,9 @@ pub enum MapAreaType {
     /// Mmap
     Mmap,
     /// Shared memory
-    Shm { shmid: i32 }, 
+    Shm {
+        shmid: i32,
+    },
     /// Physical frames(for kernel)
     Physical,
     /// MMIO(for kernel)

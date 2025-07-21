@@ -1,6 +1,6 @@
 
 
-ARCH ?= loongarch64
+ARCH ?= riscv64
 
 
 MODE ?= debug

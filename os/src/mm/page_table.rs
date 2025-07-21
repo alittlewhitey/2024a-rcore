@@ -1,22 +1,17 @@
 //! Implementation of [`PageTableEntry`] and [`PageTable`].
 
-
-
-use super::{KernelAddr, MapPermission, KERNEL_PAGE_TABLE_PPN};
 use super::{frame_alloc, FrameTracker, PhysAddr, PhysPageNum, StepByOne, VirtAddr, VirtPageNum};
+use super::{KernelAddr, MapPermission, KERNEL_PAGE_TABLE_PPN};
+use crate::config::{self, PAGE_SIZE};
 use crate::config::{KERNEL_DIRECT_OFFSET, KERNEL_PGNUM_OFFSET};
 use crate::mm::arch::{PAGE_LEVEL, PTE_NUM_IN_PAGE};
-use crate::mm::{PageTableEntry, PTEFlags};
+use crate::mm::{PTEFlags, PageTableEntry};
+use crate::timer::get_time_ticks;
+use crate::utils::error::{SysErrNo, TemplateRet};
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
-use crate::config::{self, PAGE_SIZE};
-use crate::timer::get_time_ticks;
-use crate::utils::error::{ SysErrNo, TemplateRet};
-
-
-
 
 /// 页表操作失败的错误类型。
 #[derive(Debug)]
@@ -31,12 +26,9 @@ pub enum PagingError {
     AlreadyMapped,
     /// 页表条目表示一个大页面，但目标物理帧的大小为 4K。
     MappedToHugePage,
-    
-  
 }
 /// page table structure
 pub struct PageTable {
-
     root_ppn: PhysPageNum,
     frames: Vec<Arc<FrameTracker>>,
 }
@@ -45,6 +37,7 @@ pub struct PageTable {
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 /// 页面的大小。
 pub enum PageSize {
+    None,
     /// 4 千字节的大小 (2<sup>12</sup> 字节)。
     Size4K = 0x1000,
     /// 2 兆字节的大小 (2<sup>21</sup> 字节)。
@@ -53,20 +46,17 @@ pub enum PageSize {
     Size1G = 0x4000_0000,
 }
 
-
 /// 用于页表操作的特殊 Result 类型。
 pub type PagingResult<T = ()> = Result<T, PagingError>;
 
-
-
 /// Assume that it won't oom when creating/mapping.
 impl PageTable {
-    fn alloc_frame(&mut self)->PhysPageNum{
-        let frame  =frame_alloc().unwrap();
+    fn alloc_frame(&mut self) -> PhysPageNum {
+        let frame = frame_alloc().unwrap();
         let ppn = frame.ppn;
 
         self.frames.push(frame);
-     ppn
+        ppn
     }
     /// 更新一个连续虚拟内存区域的映射标志。
     /// 在使用 [`PageTable64::map_region`] 之前，该区域必须已经被映射，否则会返回一个错误。
@@ -95,37 +85,45 @@ impl PageTable {
         paddr: Option<PhysAddr>,
         flags: Option<MapPermission>,
     ) -> PagingResult<PageSize> {
-        let vpn= vpn.floor();
-       let pte= match  self.find_pte(vpn){
+        let vpn = vpn.floor();
+        let pte = match self.find_pte(vpn) {
             Some(f) => f,
-            None => return Err(PagingError::NotMapped),
+            None => return Ok(PageSize::None),
         };
         // if pte.ppn() == 0.into() {
         //     return Ok();
         // }
+
         if let Some(paddr) = paddr {
             pte.set_ppn(paddr);
         }
         if let Some(flags) = flags {
-            pte.set_flags(flags.into());
+            let mut pte_flags: PTEFlags = flags.into();
+            if flags.contains(MapPermission::W) && pte.is_cow() && !pte.writable() {
+                pte_flags.remove(PTEFlags::W);
+                pte_flags.insert(PTEFlags::W_BACKUP);
+            } else if !flags.contains(MapPermission::W) && pte.is_write_back() {
+                pte_flags.remove(PTEFlags::W_BACKUP);
+            }
+            pte.set_flags(pte_flags);
         }
         //现在只能映射4k页面
         Ok(PageSize::Size4K)
     }
-    ///clear frame 
+    ///clear frame
     pub fn clear(&mut self) {
         self.frames.clear();
     }
     ///Create new PageTable from global kernel space
     pub fn new_from_kernel() -> Self {
         let frame = frame_alloc().unwrap();
-        let global_root_ppn = *KERNEL_PAGE_TABLE_PPN ;
+        let global_root_ppn = *KERNEL_PAGE_TABLE_PPN;
 
         // Map kernel space
         // Note that we just need shallow copy here
         let kernel_start_vpn = VirtPageNum::from(config::KERNEL_PGNUM_OFFSET);
         let level_1_index = kernel_start_vpn.indexes()[0];
-        
+
         //截断高地址页表以访问
         frame.ppn().get_pte_array()[level_1_index..]
             .copy_from_slice(&global_root_ppn.get_pte_array()[level_1_index..]);
@@ -136,14 +134,13 @@ impl PageTable {
             frames: vec![frame],
         }
     }
-    pub fn root_ppn(&self)->PhysPageNum{
+    pub fn root_ppn(&self) -> PhysPageNum {
         self.root_ppn
     }
     /// Create a new page table
     pub fn new() -> Self {
-
         let frame = frame_alloc().unwrap();
-        debug!("frame: {:#x}",frame.ppn().0);
+        debug!("frame: {:#x}", frame.ppn().0);
         PageTable {
             root_ppn: frame.ppn(),
             frames: vec![frame],
@@ -159,7 +156,7 @@ impl PageTable {
             frames: Vec::new(),
         }
     }
-    
+
         } else if #[cfg(target_arch = "loongarch64")] {
 
     /// Temporarily used to get arguments from user space.
@@ -168,78 +165,74 @@ impl PageTable {
                     root_ppn: PhysPageNum::from(pgn & ((1usize << 36) - 1)),
                     frames: Vec::new(),
                 }
-            } 
-    
-        } 
+            }
+
+        }
     }
-     
+
     #[inline]
     pub fn get_pte_list(paddr: PhysAddr) -> &'static mut [PageTableEntry] {
         paddr.slice_mut_with_len::<PageTableEntry>(PTE_NUM_IN_PAGE)
-    } 
- 
-                /// Find PageTableEntry by VirtPageNum, create a frame for a 4KB page table if not exist
-                fn find_pte_create(&mut self, vpn: VirtPageNum) -> Option<&mut PageTableEntry> {
-                    let mut pte_list = Self::get_pte_list(self.root_ppn.into());
-                    if PAGE_LEVEL == 4 {
-                        let pte = &mut pte_list[vpn.pn_index(3)];
-                        if !pte.is_valid() {
-                            *pte = PageTableEntry::new_table(self.alloc_frame().into());
-                        }
-                        pte_list = Self::get_pte_list(pte.address());
-                    }
-                    // level 3
-                    {
-                        let pte = &mut pte_list[vpn.pn_index(2)];
-                        if !pte.is_valid() {
-                            *pte = PageTableEntry::new_table(self.alloc_frame().into());
-                        }
-                        pte_list = Self::get_pte_list(pte.address());
-                    }
-                    // level 2
-                    {
-                        let pte = &mut pte_list[vpn.pn_index(1)];
-                        if !pte.is_valid() {
-                            *pte = PageTableEntry::new_table(self.alloc_frame().into());
-                        }
-                        pte_list = Self::get_pte_list(pte.address());
-                    }
-                    // level 1, map page
-                   Some(&mut pte_list[vpn.pn_index(0)] )
-                   
-                }
-                pub fn find_pte(&self, vpn: VirtPageNum) -> Option<&mut PageTableEntry> {
-                    let mut pte_list = Self::get_pte_list(self.root_ppn.into());
-                    if PAGE_LEVEL == 4 {
-                        let pte = &mut pte_list[vpn.pn_index(3)];
-                        if !pte.is_valid() {
-                            return None;
-                        }
-                        pte_list = Self::get_pte_list(pte.address());
-                    }
-                    // level 3
-                    {
-                        let pte = &mut pte_list[vpn.pn_index(2)];
-                        if !pte.is_valid() {
-                           
-                            return None;
-                        }
-                        pte_list = Self::get_pte_list(pte.address());
-                    }
-                    // level 2
-                    {
-                        let pte = &mut pte_list[vpn.pn_index(1)];
-                        if !pte.is_valid() {
-                           
-                            return None;
-                        }
-                        pte_list = Self::get_pte_list(pte.address());
-                    }
-                    // level 1, map page
-                   Some(&mut pte_list[vpn.pn_index(0)] )
-                }
+    }
 
-         
+    /// Find PageTableEntry by VirtPageNum, create a frame for a 4KB page table if not exist
+    fn find_pte_create(&mut self, vpn: VirtPageNum) -> Option<&mut PageTableEntry> {
+        let mut pte_list = Self::get_pte_list(self.root_ppn.into());
+        if PAGE_LEVEL == 4 {
+            let pte = &mut pte_list[vpn.pn_index(3)];
+            if !pte.is_valid() {
+                *pte = PageTableEntry::new_table(self.alloc_frame().into());
+            }
+            pte_list = Self::get_pte_list(pte.address());
+        }
+        // level 3
+        {
+            let pte = &mut pte_list[vpn.pn_index(2)];
+            if !pte.is_valid() {
+                *pte = PageTableEntry::new_table(self.alloc_frame().into());
+            }
+            pte_list = Self::get_pte_list(pte.address());
+        }
+        // level 2
+        {
+            let pte = &mut pte_list[vpn.pn_index(1)];
+            if !pte.is_valid() {
+                *pte = PageTableEntry::new_table(self.alloc_frame().into());
+            }
+            pte_list = Self::get_pte_list(pte.address());
+        }
+        // level 1, map page
+        Some(&mut pte_list[vpn.pn_index(0)])
+    }
+    pub fn find_pte(&self, vpn: VirtPageNum) -> Option<&mut PageTableEntry> {
+        let mut pte_list = Self::get_pte_list(self.root_ppn.into());
+        if PAGE_LEVEL == 4 {
+            let pte = &mut pte_list[vpn.pn_index(3)];
+            if !pte.is_valid() {
+                return None;
+            }
+            pte_list = Self::get_pte_list(pte.address());
+        }
+        // level 3
+        {
+            let pte = &mut pte_list[vpn.pn_index(2)];
+            if !pte.is_valid() {
+                return None;
+            }
+            pte_list = Self::get_pte_list(pte.address());
+        }
+        // level 2
+        {
+            let pte = &mut pte_list[vpn.pn_index(1)];
+            if !pte.is_valid() {
+                return None;
+            }
+            pte_list = Self::get_pte_list(pte.address());
+        }
+        // level 1, map page
+        Some(&mut pte_list[vpn.pn_index(0)])
+    }
+
     #[cfg(target_arch = "loongarch64")]
     pub fn map(&mut self, vpn: VirtPageNum, ppn: PhysPageNum, flags: PTEFlags) {
         use crate::{config::PAGE_SIZE_BITS, mm::flush_tlb};
@@ -247,9 +240,9 @@ impl PageTable {
         let pte = self.find_pte_create(vpn).unwrap();
         assert!(!pte.is_valid(), "vpn {:?} is mapped before mapping", vpn);
         *pte = PageTableEntry::new(ppn, flags);
-         flush_tlb(vpn.0<<PAGE_SIZE_BITS);
+        flush_tlb(vpn.0 << PAGE_SIZE_BITS);
     }
-    #[cfg(target_arch = "riscv64")] 
+    #[cfg(target_arch = "riscv64")]
     /// set the map between virtual page number and physical page number
     #[allow(unused)]
     pub fn map(&mut self, vpn: VirtPageNum, ppn: PhysPageNum, flags: PTEFlags) {
@@ -260,10 +253,9 @@ impl PageTable {
         assert!(!pte.is_valid(), "vpn {:?} is mapped before mapping", vpn);
         *pte = PageTableEntry::new(ppn, flags | PTEFlags::V);
     }
-    
+
     /// remove the map between virtual page number and physical page number
     #[allow(unused)]
-
     #[cfg(target_arch = "loongarch64")]
     pub fn unmap(&mut self, vpn: VirtPageNum) {
         use crate::config::PAGE_SIZE_BITS;
@@ -272,7 +264,17 @@ impl PageTable {
         assert!(pte.is_valid(), "vpn {:?} is invalid before unmapping", vpn);
         *pte = PageTableEntry::empty();
 
-         crate::mm::flush_tlb(vpn.0<<PAGE_SIZE_BITS);
+        crate::mm::flush_tlb(vpn.0 << PAGE_SIZE_BITS);
+    }
+    pub fn clear_pte(&mut self, vpn: VirtPageNum) {
+        match self.find_pte(vpn) {
+            Some(pte) => {
+                *pte = PageTableEntry::empty();
+            }
+            None => {}
+        };
+
+        crate::mm::flush_tlb(vpn.0 << config::PAGE_SIZE_BITS);
     }
 
     #[cfg(target_arch = "riscv64")]
@@ -281,82 +283,76 @@ impl PageTable {
         let pte = self.find_pte(vpn).unwrap();
         assert!(pte.is_valid(), "vpn {:?} is invalid before unmapping", vpn);
         *pte = PageTableEntry::empty();
-
     }
 
     ///并不安全也许有部分页面是懒分配的页面，这样会触发内核错误todo(Heliosly)
     /// get the page table entry from the virtual page number
     pub fn translate(&self, vpn: VirtPageNum) -> Option<PageTableEntry> {
-           #[cfg(target_arch = "loongarch64")]
-              if vpn.0>=KERNEL_PGNUM_OFFSET{
-                let va = VirtAddr::from(vpn);
+        #[cfg(target_arch = "loongarch64")]
+        if vpn.0 >= KERNEL_PGNUM_OFFSET {
+            let va = VirtAddr::from(vpn);
 
-                return Some( PageTableEntry{bits:PhysAddr::from( KernelAddr::from(va.0)).0});
-         } 
+            return Some(PageTableEntry {
+                bits: PhysAddr::from(KernelAddr::from(va.0)).0,
+            });
+        }
         self.find_pte(vpn).map(|pte| *pte)
     }
     /// get the physical address from the virtual address
     /// va to pa
     pub fn translate_va(&self, va: VirtAddr) -> Option<PhysAddr> {
-         #[cfg(target_arch = "loongarch64")]
-              if va.0>=KERNEL_DIRECT_OFFSET{
-                return Some(PhysAddr::from( KernelAddr::from(va.0)));
-         }
+        #[cfg(target_arch = "loongarch64")]
+        if va.0 >= KERNEL_DIRECT_OFFSET {
+            return Some(PhysAddr::from(KernelAddr::from(va.0)));
+        }
         self.find_pte(va.clone().floor()).map(|pte| {
             let aligned_pa: PhysAddr = pte.ppn().into();
             let offset = va.page_offset();
             let aligned_pa_usize: usize = aligned_pa.into();
-             let res= aligned_pa_usize + offset;
-             if res <=1000{
-               warn!("[translate_va] translate res<=1000,va={:#x},pte:{}",va.0,pte.bits);
-             };
+            let res = aligned_pa_usize + offset;
+            if res <= 1000 {
+                warn!(
+                    "[translate_va] translate res<=1000,va={:#x},pte:{}",
+                    va.0, pte.bits
+                );
+            };
             (res).into()
         })
     }
 
-    pub fn translate_va_with_perm(&self, va: VirtAddr, require_writable: bool) -> Result<PhysAddr, TranslateError> {
-        match self.find_pte(va.clone().floor())
-        {
+    pub fn translate_va_with_perm(
+        &self,
+        va: VirtAddr,
+        require_writable: bool,
+    ) -> Result<PhysAddr, TranslateError> {
+        match self.find_pte(va.clone().floor()) {
             Some(pte) => {
-              
-            if require_writable && !pte.writable() {
+                if require_writable && !pte.writable() {
                     return Err(TranslateError::PermissionDenied(va));
+                }
+                let aligned_pa: PhysAddr = pte.ppn().into();
+                let offset = va.page_offset();
+                let aligned_pa_usize: usize = aligned_pa.into();
+
+                return Ok((aligned_pa_usize + offset).into());
             }
-            let aligned_pa: PhysAddr = pte.ppn().into();
-            let offset = va.page_offset();
-            let aligned_pa_usize: usize = aligned_pa.into();
-       
-             return  Ok((aligned_pa_usize + offset).into())
-                
-            },
             None => {
                 return Err(TranslateError::PermissionDenied(va));
             }
         }
-          
+    }
 
-
-            }
-
-        
-        
-        
-        
-            
-
-        
-    
     pub fn token(&self) -> usize {
         cfg_if::cfg_if! {
-    if #[cfg(target_arch = "riscv64")] {
-      
-        8usize << 60 | self.root_ppn.0
+            if #[cfg(target_arch = "riscv64")] {
+
+                8usize << 60 | self.root_ppn.0
 
 
-    } else if #[cfg(target_arch = "loongarch64")] {
-        self.root_ppn.0 
-    } 
-}
+            } else if #[cfg(target_arch = "loongarch64")] {
+                self.root_ppn.0
+            }
+        }
     }
 }
 
@@ -368,8 +364,8 @@ pub struct UserBuffer<'b> {
 }
 
 impl<'b> UserBuffer<'b> {
-       /// Construct UserBuffer
-       pub fn new(buffers: Vec<&'static mut [u8]>) -> Self {
+    /// Construct UserBuffer
+    pub fn new(buffers: Vec<&'static mut [u8]>) -> Self {
         Self { buffers }
     }
 
@@ -377,7 +373,7 @@ impl<'b> UserBuffer<'b> {
     pub fn len(&self) -> usize {
         self.buffers.iter().map(|b| b.len()).sum()
     }
-    
+
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -400,7 +396,7 @@ impl<'b> UserBuffer<'b> {
         for sub_buff in self.buffers.iter_mut() {
             let space_in_sub = sub_buff.len();
             let remaining_to_write = buff.len() - bytes_written;
-            
+
             // 确定本次要拷贝的字节数
             let copy_len = space_in_sub.min(remaining_to_write);
             if copy_len == 0 {
@@ -439,16 +435,16 @@ impl<'b> UserBuffer<'b> {
         // 调整读取长度，确保不越界
         let read_len = len.min(total_len - offset);
         let mut result = Vec::with_capacity(read_len);
-        
+
         let mut bytes_to_skip = offset;
         let mut bytes_to_read = read_len;
-        
+
         for sub_buff in self.buffers.iter() {
             if bytes_to_read == 0 {
                 break; // 已经读够了
             }
             let sub_len = sub_buff.len();
-            
+
             if bytes_to_skip >= sub_len {
                 // 这个 sub_buff 完全在偏移量之前，整个跳过
                 bytes_to_skip -= sub_len;
@@ -458,7 +454,7 @@ impl<'b> UserBuffer<'b> {
             // 计算在此 sub_buff 中开始读取的位置
             let start_in_sub = bytes_to_skip;
             // 剩下的部分就不再需要跳过了
-            bytes_to_skip = 0; 
+            bytes_to_skip = 0;
 
             // 计算在此 sub_buff 中可以读取的字节数
             let can_read_from_sub = (sub_len - start_in_sub).min(bytes_to_read);
@@ -472,13 +468,11 @@ impl<'b> UserBuffer<'b> {
         result
     }
 
-
     pub fn read(&self, len: usize) -> Vec<u8> {
         // 内部可以直接调用更通用的 read_from
         self.read_from(0, len)
     }
 
-   
     pub fn fill0(&mut self) -> usize {
         for sub_buff in self.buffers.iter_mut() {
             let sblen = (*sub_buff).len();
@@ -632,12 +626,8 @@ impl<'b> Iterator for UserBufferIterator<'b> {
     }
 }
 
-
-
-
-
 use core::mem::MaybeUninit;
-use core::{ptr,slice};
+use core::{ptr, slice};
 #[derive(Debug)]
 pub enum PutDataError {
     /// 地址翻译失败，包含失败的虚拟地址
@@ -658,8 +648,7 @@ pub enum PutDataError {
 
 impl From<PutDataError> for SysErrNo {
     fn from(err: PutDataError) -> Self {
-
-        warn!("[PutDataError]err:{:#?}",err);
+        warn!("[PutDataError]err:{:#?}", err);
         match err {
             PutDataError::TranslationFailed(_) => SysErrNo::EFAULT,
             PutDataError::UnalignedAccess => SysErrNo::EFAULT,
@@ -670,7 +659,7 @@ impl From<PutDataError> for SysErrNo {
     }
 }
 
-pub type PutDataRet= Result<(),PutDataError>;
+pub type PutDataRet = Result<(), PutDataError>;
 
 /// 将类型为 `T` 的数据写入由 `token` 标识的目标地址空间中的虚拟地址 `ptr`。
 /// 支持跨页边界的数据写入。
@@ -691,7 +680,7 @@ pub type PutDataRet= Result<(),PutDataError>;
 ///
 /// # 返回
 /// 成功返回 `Ok(())`，失败返回对应的 `PutDataError`。
-pub  fn put_data<T:Copy +'static>(token: usize, ptr: *mut T, data: T) -> PutDataRet {
+pub fn put_data<T: Copy + 'static>(token: usize, ptr: *mut T, data: T) -> PutDataRet {
     let data_size = core::mem::size_of::<T>();
     if data_size == 0 {
         return Ok(()); // 零大小类型无需写入
@@ -705,8 +694,8 @@ pub  fn put_data<T:Copy +'static>(token: usize, ptr: *mut T, data: T) -> PutData
         .translate_va(start_va)
         .ok_or(PutDataError::TranslationFailed(start_va))?;
 
-  
-    let crosses_page_boundary = if data_size > 0 { // 避免 data_size - 1 溢出
+    let crosses_page_boundary = if data_size > 0 {
+        // 避免 data_size - 1 溢出
         // 判断起始物理页号和结束物理页号是否不同
         // (pa.as_usize() & !(PAGE_SIZE - 1)) != ((pa.as_usize() + size - 1) & !(PAGE_SIZE - 1))
         start_pa.floor() != (start_pa + (data_size - 1)).floor()
@@ -717,21 +706,15 @@ pub  fn put_data<T:Copy +'static>(token: usize, ptr: *mut T, data: T) -> PutData
     if !crosses_page_boundary {
         // 数据完全在单页内
         // 如果对齐允许，可以尝试直接写入
-     
+
         // 若 `T` 对齐要求较高且 `ptr` 可能不对齐，`ptr.write_unaligned(data)` 更安全
-        
-        
-        
-        
-     
-      
+
         // 安全：调用者保证 ptr 对 T 来说有效且可写
         unsafe { ptr::write(start_pa.get_mut(), data) };
-        
+
         // 或者：
         // let target_mut_ref: &mut T = &mut *start_pa.as_mut_ptr::<T>();
         // *target_mut_ref = data;
-
     } else {
         // 数据跨页，逐字节写入
         // 将 data 转成字节切片
@@ -769,15 +752,13 @@ pub  fn put_data<T:Copy +'static>(token: usize, ptr: *mut T, data: T) -> PutData
     Ok(())
 }
 
-
-
 #[derive(Debug)]
 pub enum TranslateError {
     TranslationFailed(VirtAddr),
     DataCrossesPageBoundary,
-    UnexpectedEofOrFault,   
-    InternalBufferOverflow,  
-    LengthOverflow,          
+    UnexpectedEofOrFault,
+    InternalBufferOverflow,
+    LengthOverflow,
     PermissionDenied(VirtAddr),
     PartialCopy,
     // Add other specific errors if needed, e.g., InsufficientPermissions
@@ -785,14 +766,14 @@ pub enum TranslateError {
 
 impl From<TranslateError> for SysErrNo {
     fn from(err: TranslateError) -> Self {
-        warn!("TranslateError] err:{:#?},err",err);
+        warn!("TranslateError] err:{:#?},err", err);
         match err {
             TranslateError::TranslationFailed(_) => SysErrNo::ENOMEM,
             TranslateError::DataCrossesPageBoundary => SysErrNo::EFAULT, // Or another appropriate error code
             TranslateError::UnexpectedEofOrFault => SysErrNo::EFAULT,
             TranslateError::InternalBufferOverflow => SysErrNo::EFAULT,
             TranslateError::LengthOverflow => SysErrNo::EFAULT,
-            TranslateError::PermissionDenied(_)=> SysErrNo::EACCES,
+            TranslateError::PermissionDenied(_) => SysErrNo::EACCES,
             TranslateError::PartialCopy => SysErrNo::EFAULT,
         }
     }
@@ -815,8 +796,6 @@ pub fn translated_str(token: usize, ptr: *const u8) -> String {
     string
 }
 
-
-
 #[allow(unused)]
 
 /// Translate a ptr[u8] array through page table and return a mutable reference of T
@@ -824,17 +803,18 @@ pub fn translated_str(token: usize, ptr: *const u8) -> String {
 pub fn translated_refmut<T>(token: usize, ptr: *mut T) -> TemplateRet<&'static mut T> {
     let page_table = PageTable::from_token(token);
     let va = ptr as usize;
-    match  page_table
-        .translate_va(VirtAddr::from(va)){
-        Some(pa)=> Ok(pa.get_mut()),
+    match page_table.translate_va(VirtAddr::from(va)) {
+        Some(pa) => Ok(pa.get_mut()),
         None => Err(SysErrNo::ENOMEM),
     }
-        
 }
 
-
-
-pub fn fill_str(token: usize, remote_buf: *mut u8, s: &str, max_len: usize) -> Result<(), PutDataError> {
+pub fn fill_str(
+    token: usize,
+    remote_buf: *mut u8,
+    s: &str,
+    max_len: usize,
+) -> Result<(), PutDataError> {
     let bytes = s.as_bytes();
     // 限长：最多写 max_len-1 个字符，最后一个位置放 0
     // Calculate the length of the write operation, ensuring it does not exceed the maximum allowed length.
@@ -879,14 +859,18 @@ pub fn get_target_ref<'a, T>(token: usize, ptr: *const T) -> Result<&'a T, Trans
         // Translating the VA is a good check.
         // We can return a well-aligned dangling pointer cast to &T.
         let page_table = PageTable::from_token(token);
-        page_table.translate_va(va).ok_or(TranslateError::TranslationFailed(va))?;
+        page_table
+            .translate_va(va)
+            .ok_or(TranslateError::TranslationFailed(va))?;
         // SAFETY: For ZSTs, creating a reference from a dangling but aligned pointer is allowed.
         // return Ok(unsafe { &*(core::ptr::null::<T>() as *const T) }); // Or use ptr::NonNull::dangling()
         return Ok(unsafe { &*core::ptr::NonNull::dangling().as_ptr() });
     }
 
     let page_table = PageTable::from_token(token);
-    let start_pa = page_table.translate_va(va).ok_or(TranslateError::TranslationFailed(va))?;
+    let start_pa = page_table
+        .translate_va(va)
+        .ok_or(TranslateError::TranslationFailed(va))?;
 
     // Check for cross-page boundary for the physical address
     // (va.as_usize() / PAGE_SIZE) != ((va.as_usize() + size - 1) / PAGE_SIZE)
@@ -902,7 +886,6 @@ pub fn get_target_ref<'a, T>(token: usize, ptr: *const T) -> Result<&'a T, Trans
     // Using 'static is dangerous unless the mapping is truly static.
     Ok(unsafe { &*start_pa.get_ptr::<T>() }) // Assuming PhysAddr::as_ptr() returns *const T
 }
-
 
 /// 尝试从给定的虚拟地址 `va_start` 开始，获取在同一个物理页内
 /// 最多 `max_len` 字节的连续内存区域的引用。
@@ -932,11 +915,12 @@ unsafe fn get_target_continuous_bytes_in_page<'a>(
     // TODO: 添加权限检查 (例如，可读性) from page table entry for pa_start
 
     let start_offset_in_page = va_start.page_offset(); // va_start 在其虚拟页内的偏移
-                                                                // 或者 pa_start.as_usize() % PAGE_SIZE
+                                                       // 或者 pa_start.as_usize() % PAGE_SIZE
     let bytes_remaining_in_page = PAGE_SIZE - start_offset_in_page;
     let len_to_get = max_len.min(bytes_remaining_in_page);
 
-    if len_to_get == 0 { // 例如 va_start 正好在页的末尾，而 max_len > 0
+    if len_to_get == 0 {
+        // 例如 va_start 正好在页的末尾，而 max_len > 0
         return Ok((&[], 0));
     }
 
@@ -948,10 +932,6 @@ unsafe fn get_target_continuous_bytes_in_page<'a>(
 
     Ok((byte_slice, len_to_get))
 }
-
-
-
-
 
 /// 安全地从用户空间复制一个 `T` 类型的数组到内核。
 /// 处理跨页的用户源数据。
@@ -971,7 +951,8 @@ unsafe fn get_target_continuous_bytes_in_page<'a>(
 /// - `T` 必须是 `Copy` 或 `Pod` (Plain Old Data) 类型，才能安全地通过字节复制来构造。
 ///   更通用的版本可能需要 `T: Default` 并逐个构造，或者返回 `Vec<MaybeUninit<T>>`。
 ///   这里我们简化为返回 `Vec<T>`，并假设 `T` 可以从其字节表示安全地创建。
-pub unsafe fn copy_from_user_array<T: Sized + Copy>( // 添加 Copy bound 以安全地 assume_init
+pub unsafe fn copy_from_user_array<T: Sized + Copy>(
+    // 添加 Copy bound 以安全地 assume_init
     token: usize,
     user_src_ptr: *const T,
     count: usize,
@@ -981,7 +962,8 @@ pub unsafe fn copy_from_user_array<T: Sized + Copy>( // 添加 Copy bound 以安
     }
 
     let type_size = core::mem::size_of::<T>();
-    if type_size == 0 { // 处理 ZST 数组
+    if type_size == 0 {
+        // 处理 ZST 数组
         // 对于 ZST，我们只需要 count 个默认实例。
         // T: Copy 保证了 ZST 可以被复制。
         // T 必须能被默认构造或零初始化。
@@ -995,7 +977,9 @@ pub unsafe fn copy_from_user_array<T: Sized + Copy>( // 添加 Copy bound 以安
         return Ok(result_vec);
     }
 
-    let total_bytes_to_copy = count.checked_mul(type_size).ok_or(TranslateError::LengthOverflow)?; // 防止溢出
+    let total_bytes_to_copy = count
+        .checked_mul(type_size)
+        .ok_or(TranslateError::LengthOverflow)?; // 防止溢出
 
     // 创建一个内核缓冲区来接收原始字节
     // 使用 MaybeUninit 来避免初始化 Vec<T> 的元素，因为我们将直接写入字节
@@ -1026,7 +1010,6 @@ pub unsafe fn copy_from_user_array<T: Sized + Copy>( // 添加 Copy bound 以安
         slice::from_raw_parts_mut(ptr_u8, total_bytes_to_copy)
     };
 
-
     // 执行字节复制
     copy_from_user_bytes(
         token,
@@ -1040,7 +1023,10 @@ pub unsafe fn copy_from_user_array<T: Sized + Copy>( // 添加 Copy bound 以安
     // SAFETY: 我们已经从用户空间将 total_bytes_to_copy 填满了
     //         kernel_buffer_uninit 的底层缓冲区，覆盖了所有 T 类型的实例。
     //         由于 T: Copy，从其字节表示初始化是安全的。
-    let result_vec = kernel_buffer_uninit.into_iter().map(|mu| mu.assume_init()).collect();
+    let result_vec = kernel_buffer_uninit
+        .into_iter()
+        .map(|mu| mu.assume_init())
+        .collect();
     // 或者，更直接（但也更 unsafe）的转换如果 Vec<MaybeUninit<T>> 和 Vec<T> 布局保证一致：
     // let result_vec = mem::transmute::<Vec<MaybeUninit<T>>, Vec<T>>(kernel_buffer_uninit);
     // 上面的 map + assume_init 更安全一些。
@@ -1071,7 +1057,8 @@ pub unsafe fn copy_from_user_bytes(
     kernel_dest_buffer: &mut [u8], // 目标是内核中的 slice
     mut user_src_va: VirtAddr,
     len_to_copy: usize,
-) -> Result<(), TranslateError> { // 可以定义一个更通用的 CopyError
+) -> Result<(), TranslateError> {
+    // 可以定义一个更通用的 CopyError
     if len_to_copy > kernel_dest_buffer.len() {
         // return Err(CopyError::BufferTooSmall); // 或者 panic，或调整 API
         // 对于 &mut [u8]，我们假设调用者保证了它足够大。
@@ -1110,7 +1097,6 @@ pub unsafe fn copy_from_user_bytes(
                     return Err(TranslateError::InternalBufferOverflow); // 需要定义
                 }
 
-
                 kernel_dest_buffer[dest_slice_offset..dest_slice_offset + copy_now_len]
                     .copy_from_slice(&user_page_slice[0..copy_now_len]);
 
@@ -1123,11 +1109,6 @@ pub unsafe fn copy_from_user_bytes(
     }
     Ok(())
 }
-
-
-
-
-
 
 /// 尝试从给定的虚拟地址 `va_start` 开始，获取在同一个物理页内
 /// 最多 `max_len` 字节的连续内存区域的可变引用。
@@ -1148,11 +1129,7 @@ unsafe fn get_target_continuous_writable_bytes_in_page<'a>(
 
     let page_table = PageTable::from_token(token);
     // 现在需要检查可写权限
-    let pa_start = page_table
-        .translate_va_with_perm(va_start, true /* require_writable */)?;
-      
-       
-
+    let pa_start = page_table.translate_va_with_perm(va_start, true /* require_writable */)?;
 
     let start_offset_in_page = va_start.page_offset();
     let bytes_remaining_in_page = PAGE_SIZE - start_offset_in_page;
@@ -1168,7 +1145,6 @@ unsafe fn get_target_continuous_writable_bytes_in_page<'a>(
 
     Ok((byte_slice_mut, len_to_get))
 }
-
 
 /// 安全地从内核缓冲区 `kernel_src_buffer` 复制数据到用户空间 `user_dest_va`。
 /// 处理用户空间目标地址可能跨页的情况。
@@ -1194,10 +1170,11 @@ unsafe fn get_target_continuous_writable_bytes_in_page<'a>(
 /// - `kernel_src_buffer` 必须指向有效的、可读的内核内存。
 pub unsafe fn copy_to_user_bytes(
     token: usize,
-    mut user_dest_va: VirtAddr,      // 用户空间目标虚拟地址
-    kernel_src_buffer: &[u8],       // 内核源数据
-    // len_to_copy: usize,          // 要复制的字节数，现在由 kernel_src_buffer.len() 决定
-) -> Result<usize, TranslateError> { // 返回实际复制的字节数
+    mut user_dest_va: VirtAddr, // 用户空间目标虚拟地址
+    kernel_src_buffer: &[u8],   // 内核源数据
+                                // len_to_copy: usize,          // 要复制的字节数，现在由 kernel_src_buffer.len() 决定
+) -> Result<usize, TranslateError> {
+    // 返回实际复制的字节数
     let len_to_copy = kernel_src_buffer.len();
     if len_to_copy == 0 {
         return Ok(0);
@@ -1238,10 +1215,9 @@ pub unsafe fn copy_to_user_bytes(
                 // 只复制实际能在当前用户页写入的，并且不超过内核缓冲区剩余的
                 let actual_bytes_this_pass = len_writable_in_page; // 已经被 min(remaining_len, bytes_in_page) 限制
 
-                user_page_mut_slice[0..actual_bytes_this_pass]
-                    .copy_from_slice(
-                        &kernel_src_buffer[src_slice_offset .. src_slice_offset + actual_bytes_this_pass]
-                    );
+                user_page_mut_slice[0..actual_bytes_this_pass].copy_from_slice(
+                    &kernel_src_buffer[src_slice_offset..src_slice_offset + actual_bytes_this_pass],
+                );
 
                 bytes_copied += actual_bytes_this_pass;
                 user_dest_va = user_dest_va + actual_bytes_this_pass;
@@ -1252,8 +1228,6 @@ pub unsafe fn copy_to_user_bytes(
     }
     Ok(bytes_copied)
 }
-
-
 
 /// Translate&Copy a ptr[u8] array with LENGTH len to a mutable u8 Vec through page table
 pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&'static mut [u8]> {
@@ -1330,18 +1304,22 @@ pub unsafe fn copy_to_user_bytes_exact(
     }
 }
 
-
-pub unsafe fn copy_from_user_exact<T: Copy>(token: usize, user_src: *const T) -> Result<T, TranslateError> {
+pub unsafe fn copy_from_user_exact<T: Copy>(
+    token: usize,
+    user_src: *const T,
+) -> Result<T, TranslateError> {
     let mut kernel_val = core::mem::MaybeUninit::<T>::uninit();
     copy_from_user_bytes(
         token,
-        core::slice::from_raw_parts_mut(kernel_val.as_mut_ptr() as *mut u8, core::mem::size_of::<T>()),
+        core::slice::from_raw_parts_mut(
+            kernel_val.as_mut_ptr() as *mut u8,
+            core::mem::size_of::<T>(),
+        ),
         VirtAddr::from(user_src as usize),
-        core::mem::size_of::<T>()
-    )?; 
+        core::mem::size_of::<T>(),
+    )?;
     Ok(kernel_val.assume_init())
 }
-
 
 /// 从 `token` 地址空间 `ptr` 处读取数据，
 /// 其中虚拟地址 `ptr` 解析得到的物理地址可以跨页。

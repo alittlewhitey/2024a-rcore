@@ -1,5 +1,5 @@
-use core::arch::global_asm;
 use core::arch::asm;
+use core::arch::global_asm;
 
 // global_asm!(include_str!("entry.asm"));
 global_asm!(include_str!("signal.S"));
@@ -10,8 +10,8 @@ pub mod trap;
 // pub mod timer;
 
 use crate::arch::ArchInit;
-use crate::config::KERNEL_DIRECT_OFFSET;
 use crate::arch::TrapArch;
+use crate::config::KERNEL_DIRECT_OFFSET;
 use crate::timer::current_time;
 use crate::timer::get_usertime;
 use crate::timer::TimeVal;
@@ -29,13 +29,13 @@ impl ArchInit for LoongArch64 {
     fn arch_init() {
         trap::LoongArch64Trap::init_trap();
     }
-    
+
     fn set_boot_stack() {
         unsafe {
             asm!("add.d $sp, $sp, {}", in(reg) KERNEL_DIRECT_OFFSET);
         }
     }
-    
+
     fn jump_to_rust_main() -> ! {
         unsafe {
             asm!("la.global $t0, rust_main");
@@ -45,7 +45,6 @@ impl ArchInit for LoongArch64 {
         unreachable!()
     }
 }
-
 
 #[no_mangle]
 pub fn setbootsp() -> ! {
@@ -69,20 +68,19 @@ pub unsafe extern "C" fn tlb_fill() {
         ",
     );
 }
-use loongArch64::register;
 use loongArch64::register::estat;
-use loongArch64::register::tcfg; 
+use loongArch64::register::tcfg;
 
 pub struct Scause(estat::Estat);
-pub use  loongArch64::register::estat::Trap;
+pub use loongArch64::register::estat::Trap;
 impl Scause {
-    pub fn cause(&self) ->estat::Trap {
+    pub fn cause(&self) -> estat::Trap {
         self.0.cause()
     }
 }
 
 pub fn scause() -> Scause {
-    Scause(estat::read())  
+    Scause(estat::read())
 }
 
 pub mod scause {
@@ -94,9 +92,7 @@ pub mod scause {
 
 pub mod sepc {
     pub fn read() -> usize {
-        
-            loongArch64::register::era::read().raw()
-        
+        loongArch64::register::era::read().raw()
     }
 }
 
@@ -104,20 +100,18 @@ pub mod stval {
     use loongArch64::register::badv;
 
     pub fn read() -> usize {
-       badv::read().raw()
+        badv::read().raw()
     }
 }
 
 pub fn enable_irqs() {
-      loongArch64::register::crmd::set_ie(true);
+    loongArch64::register::crmd::set_ie(true);
 }
 pub fn disable_irqs() {
-   
-      loongArch64::register::crmd::set_ie(false);
-
+    loongArch64::register::crmd::set_ie(false);
 }
 
-pub fn set_next_trigger(next:UserTimeSpec) {
+pub fn set_next_trigger(next: UserTimeSpec) {
     let curr = get_usertime();
     if next < curr {
         return;
@@ -125,7 +119,7 @@ pub fn set_next_trigger(next:UserTimeSpec) {
     let interval = next - curr;
     tcfg::set_init_val(
         (interval.tv_sec * crate::config::CLOCK_FREQ
-            + interval.tv_nsec  * crate::config::CLOCK_FREQ / 1_000_000_000) as _,
+            + interval.tv_nsec * crate::config::CLOCK_FREQ / 1_000_000_000) as _,
     );
     tcfg::set_en(true);
 }

@@ -1,9 +1,85 @@
-{
-    // "rust-analyzer.cargo.target": "riscv64gc-unknown-none-elf",
 
-     "rust-analyzer.cargo.target": "loongarch64-unknown-none",
+  {
+  "rust-analyzer.cargo.target": "riscv64gc-unknown-none-elf",
+
+    //  "rust-analyzer.cargo.target": "loongarch64-unknown-none",
     "cmake.sourceDirectory": "/home/ustc/desktop1/myos1/2024a-rcore/os/lwext4_rust/c/lwext4",
     "rust-analyzer.checkOnSave.allTargets": false,
-    "rust-analyzer.procMacro.enable": false
-  }
-  
+    "rust-analyzer.procMacro.enable": false,
+    "tslint.autoFixOnSave": true,
+    "workbench.iconTheme": "vscode-icons",
+    "window.zoomLevel":  1,
+    "gitlens.advanced.messages":  {
+        "suppressShowKeyBindingsNotice":  true
+    },
+    "liveServer.settings.donotShowInfoMsg":  true,
+    "team.showWelcomeMessage":  false,
+    "editor.cursorSmoothCaretAnimation": "on",
+    "editor.smoothScrolling": true,
+    "git.enableSmartCommit":  true,
+    "guides.enabled":  false,
+    "vsicons.dontShowNewVersionMessage":  true,
+    "javascript.updateImportsOnFileMove.enabled":   "always",
+    "editor.formatOnSave": true,
+    "editor.codeActionsOnSave":  {
+    
+    
+    },
+    "editor.defaultFormatter":   "esbenp.prettier-vscode",
+    "vetur.format.defaultFormatterOptions": {
+        "js-beautify-html": {
+            "wrap_attributes": "force-expand-multiline",
+            "end_with_newline": true
+        }
+    },
+    "vetur.format.options.tabSize": 2,
+    "vetur.format.defaultFormatter.html": "js-beautify-html",
+    "[javascript]":  {
+        "editor.defaultFormatter":   "esbenp.prettier-vscode"
+    },
+    "[less]":  {
+        "editor.defaultFormatter":   "michelemelluso.code-beautifier"
+    },
+    "[html]":  {
+        "editor.defaultFormatter":   "esbenp.prettier-vscode"
+    },
+    "[vue]": {
+        "editor.defaultFormatter": "octref.vetur"
+    },
+    "[css]":  {
+        "editor.defaultFormatter":   "esbenp.prettier-vscode"
+    },
+    "emmet.includeLanguages":  {
+        "javascript":   "javascriptreact"
+    },
+    "[jsonc]":  {
+        "editor.defaultFormatter":   "HookyQR.beautify"
+    },
+    "editor.tabSize":  2,
+    "diffEditor.ignoreTrimWhitespace":  false,
+    "files.associations":  {},
+    "http.proxyAuthorization":  null,
+    "editor.rulers":  [],
+    "scf.python3.path": "",
+    "scf.python2.path": "",
+    "interview.workspaceFolder": "",
+    "interview.updateNotification": 1626679595429,
+    "search.exclude": {
+        "**/node_modules": false
+    },
+    "[json]": {
+        "editor.quickSuggestions": {
+            "strings": true
+        },
+        "editor.suggest.insertMode": "replace",
+        "gitlens.codeLens.scopes": [
+            "document"
+        ]
+    },
+    "security.workspace.trust.untrustedFiles": "open",
+    "[rust]": {
+        "editor.defaultFormatter": "rust-lang.rust-analyzer"
+    },
+    
+}
+ 

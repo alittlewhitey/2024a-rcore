@@ -2,15 +2,16 @@
 
 mod context;
 mod ucontext;
+use crate::arch::Trap;
 use crate::arch::{scause, sepc, stval, CurrentTrap, Exception, Interrupt, Scause, TrapArch};
 use crate::syscall::syscall;
 use crate::task::{
-     current_task, current_task_may_uninit, exit_current, exit_proc, pick_next_task, run_task2,  task_tick, yield_now, CurrentTask, TaskStatus
+    current_process, current_task, current_task_may_uninit, exit_current, exit_proc,
+    pick_next_task, run_task2, task_tick, yield_now, CurrentTask, TaskStatus,
 };
 use crate::timer::set_next_trigger;
 use crate::utils::error::SysErrNo;
 pub use context::user_return;
-use crate::arch::Trap;
 pub use context::TrapStatus;
 use core::future::poll_fn;
 use core::panic;
@@ -49,7 +50,7 @@ pub fn wait_for_irqs() {
     CurrentTrap::wait_for_irqs();
 }
 
-#[cfg(target_arch="riscv64")]
+#[cfg(target_arch = "riscv64")]
 #[no_mangle]
 pub fn trap_from_kernel() {
     // backtrace();
@@ -71,7 +72,7 @@ pub fn trap_from_kernel() {
         }
     }
 }
-#[cfg(target_arch="loongarch64")]
+#[cfg(target_arch = "loongarch64")]
 #[no_mangle]
 pub fn trap_from_kernel() {
     // backtrace();
@@ -112,7 +113,7 @@ pub fn trampoline(_tc: *mut TrapContext, has_trap: bool, from_user: bool) {
                         CurrentTask::init_current(task);
                     }
                     let res = CurrentTask::get();
-                    trace!("take a task tid = {}",res.id());
+                    trace!("take a task tid = {}", res.id());
 
                     Some(res)
                 } else {
@@ -135,23 +136,28 @@ pub fn trampoline(_tc: *mut TrapContext, has_trap: bool, from_user: bool) {
         }
     }
 }
-fn log_page_fault_error(scause: Scause, stval: usize, sepc: usize) {
+async fn log_page_fault_error(scause: Scause, stval: usize, sepc: usize) {
     println!(
         "[kernel] trap_handler:  {:?} in application, bad addr = {:#x}, bad instruction = {:#x}, kernel killed it.",
         scause.cause(),
         stval,
         sepc
     );
-    
+    // current_process()
+    //     .memory_set
+    //     .lock()
+    //     .await
+    //     .areatree
+    //     .debug_print();
+    // panic!("s");
 }
 
 ///a future to handle user trap
 /// IMPO
 
-#[cfg(target_arch="loongarch64")]
+#[cfg(target_arch = "loongarch64")]
 pub async fn user_task_top() -> i32 {
     loop {
-
         let curr = current_task();
         // let VA:usize=0x150001579c;
         // unsafe { read_volatile(VA as *const u8) };
@@ -159,13 +165,17 @@ pub async fn user_task_top() -> i32 {
         let mut syscall_ret = None;
         let tf = curr.get_trap_cx().unwrap();
 
-        debug!("into user_task_top sepc:{:#x},satp:{:#x}",tf.sepc,crate::arch::root_page_addr());
+        debug!(
+            "into user_task_top sepc:{:#x},satp:{:#x}",
+            tf.sepc,
+            crate::arch::root_page_addr()
+        );
         // debug!("trap_:{:?}",tf);
         if tf.trap_status == TrapStatus::Blocked {
             let scause = scause::read();
             let stval = stval::read();
             let sepc = sepc::read();
-      
+
             // if curr.get_pid()==3{
             //     trace!(
             //         "Trap:{:#?}",tf
@@ -193,36 +203,48 @@ pub async fn user_task_top() -> i32 {
                         Err(err) => {
                             if err == SysErrNo::EAGAIN {
                                 tf.sepc -= 4;
-                                debug!("\x1b[93m [Syscall]Err: {},syscall:{}\x1b[0m", err.str(),tf.regs.a7);
+                                debug!(
+                                    "\x1b[93m [Syscall]Err: {},syscall:{}\x1b[0m",
+                                    err.str(),
+                                    tf.regs.a7
+                                );
 
                                 yield_now().await;
 
                                 tf.regs.a0
-                            } else 
-                            if err == SysErrNo::ECHILD {
-                               
-                                debug!("\x1b[93m [Syscall]Err: {},syscall:{}\x1b[0m", err.str(),tf.regs.a7);
-
+                            } else if err == SysErrNo::ECHILD {
+                                debug!(
+                                    "\x1b[93m [Syscall]Err: {},syscall:{}\x1b[0m",
+                                    err.str(),
+                                    tf.regs.a7
+                                );
 
                                 -(err as isize) as usize
                             } else if err == SysErrNo::EINVAL {
-                                warn!("\x1b[93m [Syscall]Err: {},syscall:{}\x1b[0m", err.str(),tf.regs.a7);
+                                warn!(
+                                    "\x1b[93m [Syscall]Err: {},syscall:{}\x1b[0m",
+                                    err.str(),
+                                    tf.regs.a7
+                                );
 
                                 -(err as isize) as usize
-                                
                             } else {
-                                warn!("\x1b[93m [Syscall]Err: {},syscall:{}\x1b[0m", err.str(),tf.regs.a7);
+                                warn!(
+                                    "\x1b[93m [Syscall]Err: {},syscall:{}\x1b[0m",
+                                    err.str(),
+                                    tf.regs.a7
+                                );
                                 -(err as isize) as usize
                             }
                             // debug!("[Syscall]Err:{}", err.str());
                         }
                     };
-                   
-                        tf.set_origin_a0(tf.regs.a0);
-                        tf.set_arg0(result);
-                        syscall_ret = Some(result);
 
-                    // trace!("sys_call end1"); 
+                    tf.set_origin_a0(tf.regs.a0);
+                    tf.set_arg0(result);
+                    syscall_ret = Some(result);
+
+                    // trace!("sys_call end1");
                     // 判断任务是否退出
                     if curr.is_exited() {
                         // 任务结束，需要切换至其他任务，关中断
@@ -233,11 +255,10 @@ pub async fn user_task_top() -> i32 {
                     disable_irqs();
                 }
                 Trap::Exception(Exception::StorePageFault)
-                | Trap::Exception(Exception::PageModifyFault) |
-                Trap::Exception(Exception::LoadPageFault)
-        | Trap::Exception(Exception::PageNonReadableFault)
-         | Trap::Exception(Exception::FetchPageFault)=>
-                 {
+                | Trap::Exception(Exception::PageModifyFault)
+                | Trap::Exception(Exception::LoadPageFault)
+                | Trap::Exception(Exception::PageNonReadableFault)
+                | Trap::Exception(Exception::FetchPageFault) => {
                     //懒分配
                     // println!(
                     //     "[kernel] trap_handler:  {:?} in application, bad addr = {:#x}, bad instruction = {:#x}, kernel killed it.",
@@ -246,96 +267,93 @@ pub async fn user_task_top() -> i32 {
                     //     sepc
                     // );
                     let is_write = match scause.cause() {
-                        Trap::Exception(Exception::StorePageFault) 
+                        Trap::Exception(Exception::StorePageFault)
                         | Trap::Exception(Exception::PageModifyFault) => true,
                         _ => false,
                     };
-                    
-                   
-                    let handleres= curr
+
+                    let handleres = curr
                         .get_process()
                         .unwrap()
                         .memory_set
-                        .lock().await
-                        .handle_page_fault(stval,is_write).await;
+                        .lock()
+                        .await
+                        .handle_page_fault(stval, is_write)
+                        .await;
                     match handleres {
                         Ok(value) if value == false => {
+                            log_page_fault_error(scause, stval, sepc).await;
                             exit_proc(-2).await;
-                            log_page_fault_error(scause, stval, sepc);
                         }
                         Err(_) => {
+                            log_page_fault_error(scause, stval, sepc).await;
                             exit_proc(-2).await;
-                            log_page_fault_error(scause, stval, sepc);
                         }
                         _ => {}
                     }
                 }
-            //     Trap::Exception(Exception::StoreFault)
-            //     | Trap::Exception(Exception::InstructionFault)
-            //     | Trap::Exception(Exception::LoadFault) => {
-            //         println!(
-            //     "[kernel] trap_handler:  {:?} in application, bad addr = {:#x}, bad instruction = {:#x}, kernel killed it....",
-            //     scause.cause(),
-            //     stval,
-            //     tf.sepc ,
-            // );
+                //     Trap::Exception(Exception::StoreFault)
+                //     | Trap::Exception(Exception::InstructionFault)
+                //     | Trap::Exception(Exception::LoadFault) => {
+                //         println!(
+                //     "[kernel] trap_handler:  {:?} in application, bad addr = {:#x}, bad instruction = {:#x}, kernel killed it....",
+                //     scause.cause(),
+                //     stval,
+                //     tf.sepc ,
+                // );
 
-            //         // page fault exit code
+                //         // page fault exit code
 
-            //         exit_current(-2).await;
-            //     }
-                
+                //         exit_current(-2).await;
+                //     }
                 Trap::Exception(Exception::Breakpoint) => {
                     println!("[kernel] Breakpoint exception in application (sepc={:#x}). Probably from abort(). Terminating process.", tf.sepc);
-                    let task= current_task();
+                    let task = current_task();
                     let cx = task.get_trap_cx().unwrap();
-                     cx.sepc += 2;
+                    cx.sepc += 2;
                 }
-                Trap::Exception(Exception::PageNonExecutableFault)
-                =>{
+                Trap::Exception(Exception::PageNonExecutableFault) => {
                     println!("[kernel] Illegal instruction exception in application (sepc={:#x}). Probably from abort(). Terminating process.", tf.sepc);
 
                     exit_current(-2).await;
                 }
-                
 
                 Trap::Interrupt(_) => {
-
-                        /// Timer IRQ of loongarch64
-                       const TIMER_IRQ: usize = 11;
-                    let irq_num: usize = loongArch64::register::estat::read().is().trailing_zeros() as usize;
+                    /// Timer IRQ of loongarch64
+                    const TIMER_IRQ: usize = 11;
+                    let irq_num: usize =
+                        loongArch64::register::estat::read().is().trailing_zeros() as usize;
                     match irq_num {
                         // TIMER_IRQ
                         TIMER_IRQ => {
                             loongArch64::register::ticlr::clear_timer_interrupt();
                             set_next_trigger();
 
-                    tf.trap_status = TrapStatus::Done;
-                    on_timer_tick();
-                    if let Some(curr) = current_task_may_uninit() {
-                        // if task is already exited or blocking,
-                        // no need preempt, they are rescheduling
-                        if curr.need_resched()
-                            && curr.can_preempt()
-                            && !curr.is_exited()
-                            && !curr.is_blocking()
-                        {
-                            trace!(
+                            tf.trap_status = TrapStatus::Done;
+                            on_timer_tick();
+                            if let Some(curr) = current_task_may_uninit() {
+                                // if task is already exited or blocking,
+                                // no need preempt, they are rescheduling
+                                if curr.need_resched()
+                                    && curr.can_preempt()
+                                    && !curr.is_exited()
+                                    && !curr.is_blocking()
+                                {
+                                    trace!(
                                 "[user_task_top]current {} is to be preempted in user mode, allow {},a0:{:#x}",
                                 curr.id(),
                                 curr.can_preempt(),
                                 tf.regs.a0
                             );
-                            curr.set_need_resched(false);
-                            tf.trap_status = TrapStatus::Blocked;
-                            yield_now().await;
-                        }
-                    }
-
+                                    curr.set_need_resched(false);
+                                    tf.trap_status = TrapStatus::Blocked;
+                                    yield_now().await;
+                                }
+                            }
                         }
                         _ => panic!("unknown interrupt: {}", irq_num),
                     }
-                } 
+                }
                 _ => {
                     panic!(
                         "Unsupported trap {:?}, stval = {:#x}!",
@@ -355,7 +373,6 @@ pub async fn user_task_top() -> i32 {
             // trace!("sys_call end3");
             // 判断任务是否退出
 
-            
             tf.trap_status = TrapStatus::Done;
             // trace!("sys_call end4");
             if curr.is_zombie() || curr.get_process().is_none() {
@@ -386,7 +403,7 @@ pub async fn user_task_top() -> i32 {
         .await;
     }
 }
-#[cfg(target_arch="riscv64")]
+#[cfg(target_arch = "riscv64")]
 pub async fn user_task_top() -> i32 {
     loop {
         debug!("into user_task_top");
@@ -399,7 +416,7 @@ pub async fn user_task_top() -> i32 {
             let scause = scause::read();
             let stval = stval::read();
             let sepc = sepc::read();
-      
+
             // if curr.get_pid()==3{
             //     trace!(
             //         "Trap:{:#?}",tf
@@ -427,35 +444,48 @@ pub async fn user_task_top() -> i32 {
                         Err(err) => {
                             if err == SysErrNo::EAGAIN {
                                 tf.sepc -= 4;
-                                debug!("\x1b[93m [Syscall]Err: {},syscall:{}\x1b[0m", err.str(),tf.regs.a7);
+                                debug!(
+                                    "\x1b[93m [Syscall]Err: {},syscall:{}\x1b[0m",
+                                    err.str(),
+                                    tf.regs.a7
+                                );
 
                                 yield_now().await;
 
                                 tf.regs.a0
                             } else if err == SysErrNo::ECHILD {
-                               
-                                debug!("\x1b[93m [Syscall]Err: {},syscall:{}\x1b[0m", err.str(),tf.regs.a7);
-
+                                debug!(
+                                    "\x1b[93m [Syscall]Err: {},syscall:{}\x1b[0m",
+                                    err.str(),
+                                    tf.regs.a7
+                                );
 
                                 -(err as isize) as usize
                             } else if err == SysErrNo::EINVAL {
-                                warn!("\x1b[93m [Syscall]Err: {},syscall:{}\x1b[0m", err.str(),tf.regs.a7);
+                                warn!(
+                                    "\x1b[93m [Syscall]Err: {},syscall:{}\x1b[0m",
+                                    err.str(),
+                                    tf.regs.a7
+                                );
 
                                 -(err as isize) as usize
-                                
                             } else {
-                                warn!("\x1b[93m [Syscall]Err: {},syscall:{}\x1b[0m", err.str(),tf.regs.a7);
+                                warn!(
+                                    "\x1b[93m [Syscall]Err: {},syscall:{}\x1b[0m",
+                                    err.str(),
+                                    tf.regs.a7
+                                );
                                 -(err as isize) as usize
                             }
                             // debug!("[Syscall]Err:{}", err.str());
                         }
                     };
-                   
-                        tf.set_origin_a0(tf.regs.a0);
-                        tf.set_arg0(result);
-                        syscall_ret = Some(result);
 
-                    // trace!("sys_call end1"); 
+                    tf.set_origin_a0(tf.regs.a0);
+                    tf.set_arg0(result);
+                    syscall_ret = Some(result);
+
+                    // trace!("sys_call end1");
                     // 判断任务是否退出
                     if curr.is_exited() {
                         // 任务结束，需要切换至其他任务，关中断
@@ -467,8 +497,7 @@ pub async fn user_task_top() -> i32 {
                 }
                 Trap::Exception(Exception::StorePageFault)
                 | Trap::Exception(Exception::LoadPageFault)
-                | Trap::Exception(Exception::InstructionPageFault)=>
-                 {
+                | Trap::Exception(Exception::InstructionPageFault) => {
                     //懒分配
                     // println!(
                     //     "[kernel] trap_handler:  {:?} in application, bad addr = {:#x}, bad instruction = {:#x}, kernel killed it.",
@@ -476,29 +505,32 @@ pub async fn user_task_top() -> i32 {
                     //     stval,
                     //     sepc
                     // );
-                    let is_write:bool=
+                    let is_write: bool =
                         scause.cause() == Trap::Exception(Exception::StorePageFault);
 
-                    let stval=if scause.cause() == Trap::Exception(Exception::IllegalInstruction) {
+                    let stval = if scause.cause() == Trap::Exception(Exception::IllegalInstruction)
+                    {
                         // 如果是非法指令异常，stval 是 sepc
                         sepc
                     } else {
                         stval
                     };
-                    let handleres= curr
+                    let handleres = curr
                         .get_process()
                         .unwrap()
                         .memory_set
-                        .lock().await
-                        .handle_page_fault(stval,is_write).await;
+                        .lock()
+                        .await
+                        .handle_page_fault(stval, is_write)
+                        .await;
                     match handleres {
                         Ok(value) if value == false => {
                             exit_proc(-2).await;
-                            log_page_fault_error(scause, stval, sepc);
+                            log_page_fault_error(scause, stval, sepc).await;
                         }
                         Err(_) => {
                             exit_proc(-2).await;
-                            log_page_fault_error(scause, stval, sepc);
+                            log_page_fault_error(scause, stval, sepc).await;
                         }
                         _ => {}
                     }
@@ -517,19 +549,18 @@ pub async fn user_task_top() -> i32 {
 
                     exit_current(-2).await;
                 }
-                
+
                 Trap::Exception(Exception::Breakpoint) => {
                     println!("[kernel] Breakpoint exception in application (sepc={:#x}). Probably from abort(). Terminating process.", tf.sepc);
-                    let task= current_task();
+                    let task = current_task();
                     let cx = task.get_trap_cx().unwrap();
-                     cx.sepc += 2;
+                    cx.sepc += 2;
                 }
-Trap::Exception(Exception::IllegalInstruction)  =>{
+                Trap::Exception(Exception::IllegalInstruction) => {
                     println!("[kernel] Illegal instruction exception in application (sepc={:#x}). Probably from abort(). Terminating process.", tf.sepc);
 
                     exit_current(-2).await;
                 }
-                
 
                 Trap::Interrupt(Interrupt::SupervisorTimer) => {
                     set_next_trigger();
@@ -575,7 +606,6 @@ Trap::Exception(Exception::IllegalInstruction)  =>{
             // trace!("sys_call end3");
             // 判断任务是否退出
 
-            
             tf.trap_status = TrapStatus::Done;
             // trace!("sys_call end4");
             if curr.is_zombie() || curr.get_process().is_none() {
@@ -613,4 +643,3 @@ pub fn on_timer_tick() {
         }
     }
 }
-
