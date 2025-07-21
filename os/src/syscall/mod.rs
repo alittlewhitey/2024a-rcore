@@ -18,6 +18,7 @@ mod mm;
 pub mod arch;
 mod net;
 pub mod flags;
+use alloc::{format,string::String,vec::Vec};
 use mm::*;
 use flags::{IoVec, Utsname};
 use crate::{fs::select::FdSet, mm::shm::ShmIdDs, signal::SigInfo, syscall::net::{sys_accept, sys_accept4, sys_bind, sys_connect, sys_getpeername, sys_getsockname, sys_listen, sys_recvfrom, sys_sendmsg, sys_sendto, sys_setsockopt, sys_socket, sys_socketpair}, timer::{Tms, UserTimeSpec}};
@@ -27,12 +28,40 @@ use other::*;
 
 use arch::*;
 use crate::{fs::{Kstat, PollFd}, signal::{SigAction, SigSet}, timer::TimeVal, utils::error::SyscallRet};
-
+use alloc::collections::BTreeMap;
+use hashbrown::HashMap;
+use spin::Lazy;
+use spin::RwLock;
 
 use signal::*;
+
+static SYSCALL_COUNT: Lazy<RwLock<HashMap<usize, usize>>> =
+    Lazy::new(|| RwLock::new(HashMap::new()));
+
+pub fn record_syscall(syscall_id: usize) {
+    let mut count = SYSCALL_COUNT.write();
+    let e = count.entry(syscall_id).or_insert(0);
+    *e += 1;
+}
+pub fn get_syscall_count_string() -> String {
+    let counts = SYSCALL_COUNT.read();
+    if counts.is_empty() {
+        return String::new();
+    }
+    let mut sorted_counts: Vec<_> = counts.iter().collect();
+    sorted_counts.sort_by_key(|&(&id, _)| id);
+
+    let mut result = String::new();
+    for (id, count) in sorted_counts {
+        result.push_str(&format!("{:3}: {:10}\n", id, count));
+    }
+    result
+}
+
 /// handle syscall exception with `syscall_id` and other arguments
-pub async  fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
-  match syscall_id {
+pub async fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
+    record_syscall(syscall_id);
+    match syscall_id {
         SYSCALL_OPEN => sys_openat(args[0] as i32,args[1] as *const u8,args[2] as u32,args[3] as u32).await,
         SYSCALL_CLOSE => sys_close(args[0] as i32).await,
         SYSCALL_CLOCK_NANOSLEEP=> sys_clock_nanosleep(args[0],args[1],args[2] as *const UserTimeSpec,args[3] as *mut UserTimeSpec).await,

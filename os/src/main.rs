@@ -136,7 +136,9 @@ pub fn main(hart_id:usize) -> ! {
     // task::add_initproc("/glibc", "/glibc/busybox", "sh");
     // task::add_initproc("/musl", "/musl/busybox", "sh run-dynamic.sh");
 
-     task::add_initproc("/musl", "/musl/busybox", "sh /disk/run-static.sh");
+    // task::add_initproc("/musl", "/musl/busybox", "sh /disk/run-static.sh");
+    // task::add_initproc("/musl", "/musl/busybox", "echo hello");
+    task::add_initproc("/musl", "/musl/busybox", "sh");
 
     //  task::add_initproc("/musl", "/musl/hackbench", "");
     //  task::add_initproc("/glibc", "/glibc/basic/mmap", "");

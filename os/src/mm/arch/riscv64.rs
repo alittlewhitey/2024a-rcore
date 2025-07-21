@@ -96,7 +96,7 @@ impl PageTableEntry {
         PTEFlags::from_bits_truncate(self.bits).intersects(PTEFlags::R | PTEFlags::X)
     }
     pub fn is_cow(&self)->bool{
-        PTEFlags::from_bits_truncate(self.bits).contains(PTEFlags::R | PTEFlags::W)
+        PTEFlags::from_bits_truncate(self.bits).contains(PTEFlags::COW)
     }
        // 判断是否设置了 W_BACKUP
     pub fn is_back_w(&self) -> bool {
