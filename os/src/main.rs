@@ -35,8 +35,9 @@ extern crate alloc;
 
 #[macro_use]
 mod console;
-pub mod devices;
+pub mod arch;
 pub mod config;
+pub mod devices;
 pub mod drivers;
 pub mod fs;
 pub mod lang_items;
@@ -47,13 +48,11 @@ pub mod sync;
 pub mod syscall;
 pub mod task;
 pub mod timer;
-pub mod arch;
 // pub mod executor;
 
 pub mod signal;
 pub mod trap;
 ///utils;
-
 pub mod utils;
 
 // use core::arch::{asm, global_asm};
@@ -61,7 +60,14 @@ use alloc::boxed::Box;
 use polyhal::PhysAddr;
 use trap::user_task_top;
 
-use crate::{config::PAGE_SIZE, fs::{open_file, OpenFlags}, mm::{frame_allocator::{frame_alloc_persist, frame_dealloc_persist}, frame_dealloc}};
+use crate::{
+    config::PAGE_SIZE,
+    fs::{open_file, OpenFlags},
+    mm::{
+        frame_allocator::{frame_alloc_persist, frame_dealloc_persist},
+        frame_dealloc,
+    },
+};
 use polyhal_boot::define_entry;
 // global_asm!(include_str!("entry.asm"));
 /// clear BSS segment
@@ -71,17 +77,16 @@ fn clear_bss() {
         fn _ebss();
     }
     unsafe {
-        core::slice::from_raw_parts_mut(_sbss as usize as *mut u8, _ebss as usize -_sbss as usize)
+        core::slice::from_raw_parts_mut(_sbss as usize as *mut u8, _ebss as usize - _sbss as usize)
             .fill(0);
     }
-
 }
 pub struct PageAllocImpl;
 
 impl polyhal::common::PageAlloc for PageAllocImpl {
     #[inline]
     fn alloc(&self) -> PhysAddr {
-        unsafe {PhysAddr::new( frame_alloc_persist().expect("can't alloc frame")) }
+        unsafe { PhysAddr::new(frame_alloc_persist().expect("can't alloc frame")) }
     }
 
     #[inline]
@@ -93,18 +98,19 @@ impl polyhal::common::PageAlloc for PageAllocImpl {
     }
 }
 
-
-pub fn main(hart_id:usize) -> ! {
-
+pub fn main(hart_id: usize) -> ! {
     println!("[kernel] Hello, !");
-    
+
     polyhal::irq::IRQ::int_disable();
-    #[cfg(target_arch="loongarch64")]
-    println!("dmw1:{:#x},dmw0 :{:#x}",loongArch64::register::dmw1::read().raw(),loongArch64::register::dmw0::read().raw());
+    #[cfg(target_arch = "loongarch64")]
+    println!(
+        "dmw1:{:#x},dmw0 :{:#x}",
+        loongArch64::register::dmw1::read().raw(),
+        loongArch64::register::dmw0::read().raw()
+    );
     logging::init();
     polyhal::common::init(&PageAllocImpl);
 
-    
     trap::init();
     mm::init();
     mm::remap_test();
@@ -115,16 +121,12 @@ pub fn main(hart_id:usize) -> ! {
     timer::init_timer_backend();
     task::init(|| Box::pin(user_task_top()));
 
-
     fs::init();
     // fs::list_app();
-    
-    // task::add_initproc("/", "/musl/busybox",  "sh /initproc.sh");
 
     // task::add_initproc("/musl", "/musl/busybox",  "sh /musl/ltp_testcode.sh");
-    // task::add_initproc("/", "/musl/busybox",  "sh /write_tmp.sh");
+    task::add_initproc("/", "/musl/busybox", "sh /initproc.sh");
     //  task::add_initproc("/basic", "/basic/sigtest", "");
-
 
     //  task::add_initproc("/glibc", "/musl/busybox", "sh cyclictest_testcode.sh");
     // task::add_initproc("/musl", "/musl/busybox", "sh run-dynamic.sh");
@@ -134,11 +136,15 @@ pub fn main(hart_id:usize) -> ! {
     // task::add_initproc("/musl", "/mmap", "");
 
     // task::add_initproc("/glibc", "/glibc/busybox", "sh");
-    // task::add_initproc("/musl", "/musl/busybox", "sh run-dynamic.sh");
+    // task::add_initproc("/musl", "/musl/busybox", "sh ./libcbench_testcode.sh");
+
 
     // task::add_initproc("/musl", "/musl/busybox", "sh /disk/run-static.sh");
     // task::add_initproc("/musl", "/musl/busybox", "echo hello");
     task::add_initproc("/musl", "/musl/busybox", "sh");
+
+    //  task::add_initproc("/disk", "/musl/busybox", "sh /disk/run-dynamic.sh");
+
 
     //  task::add_initproc("/musl", "/musl/hackbench", "");
     //  task::add_initproc("/glibc", "/glibc/basic/mmap", "");
@@ -149,7 +155,7 @@ pub fn main(hart_id:usize) -> ! {
     //  task::add_initproc("/musl", "/musl/busybox", "sh /musl/run-static.sh");
     //  task::add_initproc("/libctest", "/glibc/busybox", "sh /libctest/run-static.sh");
     // open_file("/usr/lib", OpenFlags::O_PATH,0).unwrap();
-    extern  "C" {
+    extern "C" {
         fn trampoline(tc: usize, has_trap: bool, from_user: bool) -> !;
     }
 
@@ -164,5 +170,5 @@ define_entry!(main);
 // 栈溢出检测失败时调用的函数
 #[no_mangle]
 pub extern "C" fn __stack_chk_fail() {
-  panic!("stack overflow detected");
+    panic!("stack overflow detected");
 }

@@ -9,7 +9,8 @@ use crate::config::{PAGE_SIZE, PAGE_SIZE_BITS, USER_STACK_SIZE, USER_STACK_TOP};
 use crate::fs::inode::NONE_MODE;
 use crate::fs::{find_inode, open_file, FileClass, FileDescriptor, OpenFlags, Stdin, Stdout};
 use crate::mm::{
-    activate_by_token, flush_all, get_target_ref, put_data, translated_refmut, MapArea, MapAreaType, MapPermission, MemorySet, VirtAddr, VirtPageNum, KERNEL_PAGE_TABLE_TOKEN
+    activate_by_token, flush_all, get_target_ref, put_data, translated_refmut, MapArea,
+    MapAreaType, MapPermission, MemorySet, VirtAddr, VirtPageNum, KERNEL_PAGE_TABLE_TOKEN,
 };
 use crate::signal::{ProcessSignalSharedState, TaskSignalState};
 use crate::sync::futex::GLOBAL_FUTEX_SYSTEM;
@@ -48,7 +49,6 @@ unsafe impl Send for ProcessControlBlock {}
 ///
 /// Directly save the contents that will not change during running
 pub struct ProcessControlBlock {
-
     pub timers: [Mutex<KernelTimer>; 3],
     /// The  trapcontext
     // Immutable
@@ -89,23 +89,20 @@ pub struct ProcessControlBlock {
     pub fd_table: Arc<Mutex<FdManage>>,
     pub signal_shared_state: Arc<Mutex<ProcessSignalSharedState>>,
     pub state: Mutex<TaskStatus>,
-    pub wakers:Mutex<BTreeMap<usize,Waker>>
-    //todo(heliosly)
+    pub wakers: Mutex<BTreeMap<usize, Waker>>, //todo(heliosly)
 }
 /// `ProcessControlBlock` 的实现。
 
 impl ProcessControlBlock {
-    
-
-    pub async fn get_file(&self,fd:usize)->Result<FileDescriptor, SysErrNo>{
+    pub async fn get_file(&self, fd: usize) -> Result<FileDescriptor, SysErrNo> {
         self.fd_table.lock().await.get_file(fd)
     }
-    pub async fn alloc_fd(&self)->SyscallRet{
+    pub async fn alloc_fd(&self) -> SyscallRet {
         self.fd_table.lock().await.alloc_fd()
     }
-    pub async fn alloc_and_add_fd(&self,fd:FileDescriptor)->SyscallRet{
+    pub async fn alloc_and_add_fd(&self, fd: FileDescriptor) -> SyscallRet {
         let mut table = self.fd_table.lock().await;
-        let res= table.alloc_fd()?;
+        let res = table.alloc_fd()?;
         table.add_fd(fd, res)?;
         Ok(res)
     }
@@ -251,14 +248,15 @@ impl ProcessControlBlock {
         permission: MapPermission,
         area_type: MapAreaType,
     ) {
-      match self.memory_set
+        match self
+            .memory_set
             .lock()
             .await
-            .insert_framed_area(start_va, end_va, permission, area_type){
-                Ok(s) => s,
-                Err(e) => error!("insert_framed_area error: {:?}", e),
-            }
-      
+            .insert_framed_area(start_va, end_va, permission, area_type)
+        {
+            Ok(s) => s,
+            Err(e) => error!("insert_framed_area error: {:?}", e),
+        }
     }
 
     /// 根据 hint 插入页面到指定的 area 并返回 (va_bottom, va_top)。
@@ -295,7 +293,8 @@ impl ProcessControlBlock {
 
         let start_va = VirtAddr::from(base_vpn);
         let end_va = VirtAddr::from(top_vpn);
-        self.insert_framed_area(start_va, end_va, map_perm, area_type) .await;
+        self.insert_framed_area(start_va, end_va, map_perm, area_type)
+            .await;
         (start_va.0, end_va.0)
     }
 
@@ -307,11 +306,10 @@ impl ProcessControlBlock {
                 USER_STACK_SIZE,
                 MapPermission::R | MapPermission::W | MapPermission::U,
                 MapAreaType::Stack,
-            ) .await;
+            )
+            .await;
 
         self.set_user_stack_top(ustack_top);
-
-
     }
 
     /// fork
@@ -333,24 +331,31 @@ impl ProcessControlBlock {
 
         let start_va = VirtAddr::from(base_vpn);
         let end_va = VirtAddr::from(top_vpn);
-        let new_area =MapArea::new(start_va, end_va,
-           crate::mm::MapType::Framed ,      
+        let new_area = MapArea::new(
+            start_va,
+            end_va,
+            crate::mm::MapType::Framed,
             MapPermission::R | MapPermission::W | MapPermission::U,
-            MapAreaType::Stack) ;
+            MapAreaType::Stack,
+        );
         self.set_user_stack_top(end_va.0);
-    
-        let old_memory=another.memory_set.lock().await;
-        let old_area=old_memory.areatree.get(&VirtPageNum::from(
-            (another.user_stack_top() - USER_STACK_SIZE)>>PAGE_SIZE_BITS
-    
-    )).unwrap();
-        self.memory_set.lock().await.push_with_given_frames(new_area, &old_area.data_frames,true);
-    //     // 对每对 (vpn, frame) 做映射并记录
-    //     for (vpn, _) in old_area.data_frames.iter(){
-    //     let   pte= old_memory.page_table.find_pte(*vpn).unwrap();
-    //       pte.set_cow();
-    //   }
-        
+
+        let old_memory = another.memory_set.lock().await;
+        let old_area = old_memory
+            .areatree
+            .get(&VirtPageNum::from(
+                (another.user_stack_top() - USER_STACK_SIZE) >> PAGE_SIZE_BITS,
+            ))
+            .unwrap();
+        self.memory_set
+            .lock()
+            .await
+            .push_with_given_frames(new_area, &old_area.data_frames, true);
+        //     // 对每对 (vpn, frame) 做映射并记录
+        //     for (vpn, _) in old_area.data_frames.iter(){
+        //     let   pte= old_memory.page_table.find_pte(*vpn).unwrap();
+        //       pte.set_cow();
+        //   }
     }
 
     /// 替换内存空间。
@@ -376,9 +381,8 @@ impl ProcessControlBlock {
             .cloned()
     }
     pub async fn contains_tid(&self, tid: usize) -> bool {
-        self.tasks.lock().await .iter().any(|tcb| tcb.id() == tid)
+        self.tasks.lock().await.iter().any(|tcb| tcb.id() == tid)
     }
-   
 }
 //  Non
 
@@ -451,7 +455,7 @@ impl ProcessControlBlock {
     /// Create a new process
     ///
     /// At present, it is only used for the creation of initproc
-    pub async  fn new(
+    pub async fn new(
         elf_data: &[u8],
         cwd: String,
         argv: &Vec<String>,
@@ -462,7 +466,8 @@ impl ProcessControlBlock {
         let pid_handle = pid_alloc();
         // memory_set with elf program headers/trampoline/trap context/user stack
         // disable_irqs();
-        let (memory_set, user_sp, entry_point, mut auxv,is_dl) = MemorySet::from_elf(elf_data);
+        let (memory_set, user_sp, entry_point, mut auxv, is_dl, tls) =
+            MemorySet::from_elf(elf_data);
         memory_set.activate();
         flush_all();
         // enable_irqs();
@@ -483,8 +488,11 @@ impl ProcessControlBlock {
             false,
         )));
         let process_control_block = Self {
-
-            timers: [Mutex::new(KernelTimer::default()),Mutex::new(KernelTimer::default()),Mutex::new(KernelTimer::default())],
+            timers: [
+                Mutex::new(KernelTimer::default()),
+                Mutex::new(KernelTimer::default()),
+                Mutex::new(KernelTimer::default()),
+            ],
             pid: pid_handle,
             user_stack_top: AtomicUsize::new(USER_STACK_TOP),
             is_init: AtomicBool::new(true),
@@ -494,7 +502,7 @@ impl ProcessControlBlock {
             children: Mutex::new(Vec::new()),
             exit_code: AtomicI32::new(1),
             heap_bottom: AtomicUsize::new(user_sp),
-            program_brk: AtomicUsize::new(user_sp+PAGE_SIZE),
+            program_brk: AtomicUsize::new(user_sp + PAGE_SIZE),
             memory_set: Arc::new(Mutex::new(memory_set)),
             main_task: Mutex::new(new_task.clone()),
             tasks: Mutex::new(vec![new_task.clone()]),
@@ -504,9 +512,12 @@ impl ProcessControlBlock {
             state: Mutex::new(TaskStatus::Runnable),
             wakers: Mutex::new({
                 let mut map = BTreeMap::new();
-                map.insert(new_task.id(), waker_from_task(Arc::into_raw(new_task.clone())));
+                map.insert(
+                    new_task.id(),
+                    waker_from_task(Arc::into_raw(new_task.clone())),
+                );
                 map
-            })
+            }),
         };
 
         process_control_block.alloc_user_res().await;
@@ -601,12 +612,13 @@ impl ProcessControlBlock {
         trap_cx.regs.a0 = argv.len();
         trap_cx.regs.a1 = argv_base;
         trap_cx.regs.a2 = envp_base;
-        trap_cx.regs.gp= 0xdead_beef_aaad_beef;
-        trap_cx.set_tls(0xdead_beef_aaad_beef);
-        if is_dl{
+        trap_cx.regs.gp = 0xdead_beef_aaad_beef;
+
+        trap_cx.set_tls(tls.map_or(0, |s| s));
+        if is_dl {
             trap_cx.regs.a0 = entry_point;
-          }
-  
+        }
+
         add_task(new_task.clone());
         TID2TC.lock().insert(new_task.id.0, new_task);
         process_control_block
@@ -621,7 +633,8 @@ impl ProcessControlBlock {
     ) -> GeneralRet {
         //用户栈高地址到低地址：环境变量字符串/参数字符串/aux辅助向量/环境变量地址数组/参数地址数组/参数数量
         // memory_set with elf program headers/trampoline/trap context/user stack
-        let (memory_set, user_heap_base, entry_point, mut auxv,is_dl) = MemorySet::from_elf(elf_data);
+        let (memory_set, user_heap_base, entry_point, mut auxv, is_dl, tls) =
+            MemorySet::from_elf(elf_data);
 
         // **** access current TCB exclusively
         memory_set.activate();
@@ -726,16 +739,15 @@ impl ProcessControlBlock {
         *trap_cx = TrapContext::app_init_context(entry_point, user_sp);
         trap_cx.kernel_sp = current_stack_top();
         trap_cx.trap_status = TrapStatus::Done;
+        trap_cx.set_tls(tls.map_or(0, |tls| tls));
 
-        
-        
         // if is_dl{
         //   trap_cx.regs.a0 = entry_point;
         // }
 
         // println!("{:#?}",trap_cx);
         trace!("exec:sp:{:#x}", trap_cx.kernel_sp);
-        self.set_heap_bottom(user_heap_base );
+        self.set_heap_bottom(user_heap_base);
         self.set_program_brk(user_heap_base + PAGE_SIZE);
         Ok(())
         // **** release current PCB
@@ -752,7 +764,7 @@ impl ProcessControlBlock {
     ) -> SyscallRet {
         // ---- hold parent PCB lock
         // alloc a pid and a kernel stack in kernel space
-        
+
         // copy user space(include trap context)
         // 子线程或者进程的memory_set和 clone_token
         let (memory_set, clone_token) = if flags.contains(CloneFlags::CLONE_THREAD) {
@@ -761,14 +773,14 @@ impl ProcessControlBlock {
             let ms = if flags.contains(CloneFlags::CLONE_VM) {
                 self.memory_set.clone()
             } else {
-                Arc::new(Mutex::new(MemorySet::from_existed_user(
-                    &mut *self.memory_set.lock().await,
-                ).await))
+                Arc::new(Mutex::new(
+                    MemorySet::from_existed_user(&mut *self.memory_set.lock().await).await,
+                ))
             };
             let token = ms.lock().await.token();
             (Some(ms), token)
         };
-    
+
         let parent = if flags.contains(CloneFlags::CLONE_PARENT) {
             self.parent()
         } else {
@@ -788,18 +800,21 @@ impl ProcessControlBlock {
 
         // 若包含CLONE_CHILD_SETTID或者CLONE_CHILD_CLEARTID
         // 则需要把线程号写入到子线程地址空间中tid对应的地址中
-        
-        let (child_tid,need_clear_tid) = if (flags.contains(CloneFlags::CLONE_CHILD_SETTID)
-            || flags.contains(CloneFlags::CLONE_CHILD_CLEARTID))&&ctid!=0
-        {
-            
 
-            (Some(ctid),flags.contains(CloneFlags::CLONE_CHILD_CLEARTID))
+        let (child_tid, need_clear_tid) = if (flags.contains(CloneFlags::CLONE_CHILD_SETTID)
+            || flags.contains(CloneFlags::CLONE_CHILD_CLEARTID))
+            && ctid != 0
+        {
+            (Some(ctid), flags.contains(CloneFlags::CLONE_CHILD_CLEARTID))
         } else {
             (None, false)
         };
+        let current_t = current_task();
+        let old_trap = current_t.get_trap_cx().unwrap();
 
-        let trap_cx = Box::new(*current_task().get_trap_cx().unwrap());
+        let old_tls = old_trap.regs.tp;
+        let trap_cx = Box::new(*old_trap);
+        drop(current_t);
         let fut = UTRAP_HANDLER();
         let tcb = Arc::new(CFSTask::new(TaskControlBlock::new(
             false,
@@ -812,7 +827,7 @@ impl ProcessControlBlock {
             child_tid,
             need_clear_tid,
         )));
-        if flags.contains(CloneFlags::CLONE_PARENT_SETTID)&&ptid!=0 {
+        if flags.contains(CloneFlags::CLONE_PARENT_SETTID) && ptid != 0 {
             self.manual_alloc_type_for_lazy(ptid as *const u32).await?;
             let parent_token = self.memory_set.lock().await.token();
             *translated_refmut(parent_token, ptid as *mut u32)? = tcb.id.0 as u32;
@@ -827,7 +842,11 @@ impl ProcessControlBlock {
                 self.pid.0,
                 tcb.id()
             );
-            current_process().wakers.lock().await.insert(tcb.id(),waker_from_task(Arc::into_raw(tcb.clone())));
+            current_process()
+                .wakers
+                .lock()
+                .await
+                .insert(tcb.id(), waker_from_task(Arc::into_raw(tcb.clone())));
             tcb.id.0
         } else {
             let new_proc_sig_state = if flags.contains(CloneFlags::CLONE_SIGHAND) {
@@ -837,8 +856,8 @@ impl ProcessControlBlock {
                     &*current_process().signal_shared_state.lock().await,
                 )))
             };
-           let memory_set= memory_set.unwrap();
-        //    memory_set.lock().await.areatree.debug_print();
+            let memory_set = memory_set.unwrap();
+            //    memory_set.lock().await.areatree.debug_print();
             let process_control_block = Arc::new(ProcessControlBlock {
                 pid: pid.unwrap(),
                 main_task: Mutex::new(tcb.clone()),
@@ -861,15 +880,18 @@ impl ProcessControlBlock {
                 tasks: Mutex::new(Vec::new()),
                 exe: Mutex::new(self.exe.lock().await.clone()),
                 state: Mutex::new(TaskStatus::Runnable),
-                
+
                 wakers: Mutex::new({
                     let mut map = BTreeMap::new();
                     map.insert(tcb.id(), waker_from_task(Arc::into_raw(tcb.clone())));
                     map
                 }),
 
-            timers: [Mutex::new(KernelTimer::default()),Mutex::new(KernelTimer::default()),Mutex::new(KernelTimer::default())],
-
+                timers: [
+                    Mutex::new(KernelTimer::default()),
+                    Mutex::new(KernelTimer::default()),
+                    Mutex::new(KernelTimer::default()),
+                ],
             });
 
             tcb.set_lead();
@@ -880,8 +902,7 @@ impl ProcessControlBlock {
             }
             info!(
                 "[kernel]:cloneproc pid[{}] -> pid[{}]",
-                self.pid.0,
-                process_control_block.pid.0
+                self.pid.0, process_control_block.pid.0
             );
             process_control_block.tasks.lock().await.push(tcb.clone());
             // process_control_block.clone_user_res(&self);
@@ -902,6 +923,8 @@ impl ProcessControlBlock {
             trap_cx.regs.a0 = 0;
             if flags.contains(CloneFlags::CLONE_SETTLS) {
                 trap_cx.set_tls(tls);
+            } else {
+                trap_cx.set_tls(old_tls);
             }
             // 设置用户栈
             // 若给定了用户栈，则使用给定的用户栈
@@ -909,15 +932,15 @@ impl ProcessControlBlock {
             // 没有给定用户栈的时候，只能是共享了地址空间，且原先调用clone的有用户栈，此时已经在之前的trap clone时复制了
             if user_stack != 0 {
                 trap_cx.set_sp(user_stack);
-          
+
                 info!(
                     "New user stack: sepc:{:X}, stack:{:X},tp:{:X}",
-                    trap_cx.sepc, trap_cx.regs.sp,trap_cx.regs.tp
+                    trap_cx.sepc, trap_cx.regs.sp, trap_cx.regs.tp
                 );
             }
         }
-        if flags.contains(CloneFlags::CLONE_CHILD_SETTID)&&ctid!=0 {
-            *translated_refmut(clone_token, ctid as *mut u32)? =  tcb.id() as u32;
+        if flags.contains(CloneFlags::CLONE_CHILD_SETTID) && ctid != 0 {
+            *translated_refmut(clone_token, ctid as *mut u32)? = tcb.id() as u32;
         }
         add_task(tcb.clone());
         TID2TC.lock().insert(tcb.id.0, tcb);
@@ -936,23 +959,66 @@ impl ProcessControlBlock {
 
     /// change the location of the program break. return None if failed.
     pub async fn change_program_brk(&self, new_brk: usize) -> Option<usize> {
-        let heap_bottom = self.heap_bottom();
         let old_break = self.program_brk();
+        let old_end_vpn = VirtAddr::from(old_break - PAGE_SIZE).floor();
         let size = new_brk as isize - old_break as isize;
+        let last_area: VirtAddr;
         debug!("[brk] old={:#x}, new={:#x}", old_break, new_brk);
-        if new_brk < heap_bottom {
-            return None;
-        }
-        let result = if size < 0 {
+
+        let result: bool = if size < 0 {
+            let end_brk;
+            let area_start: VirtPageNum;
+            match self.memory_set.lock().await.areatree.find_area(old_end_vpn) {
+                Some(area) => {
+                    area_start = area;
+                }
+                None => unreachable!(),
+            }
+            let ms = self.memory_set.lock().await;
+            let area = ms.areatree.get(&area_start);
+            match area.unwrap().area_type {
+                MapAreaType::Brk => {
+                    last_area = area_start.into();
+                    end_brk = core::cmp::max(last_area.0, new_brk);
+                }
+                _ => {
+                    //处理 brk 被mmap破坏的意外情况
+                    unimplemented!();
+                }
+            }
             self.memory_set
                 .lock()
                 .await
-                .shrink_to(VirtAddr(heap_bottom), VirtAddr(new_brk))
+                .shrink_to(last_area, VirtAddr(end_brk))
         } else {
+            let area_start: VirtPageNum;
+            match self.memory_set.lock().await.areatree.find_area(old_end_vpn) {
+                Some(area) => {
+                    area_start = area;
+                }
+                None => unreachable!(),
+            }
+            last_area = area_start.into();
+            let end_vpn = self
+                .memory_set
+                .lock()
+                .await
+                .areatree
+                .get(&area_start)
+                .unwrap()
+                .end_vpn();
+            let new_brk_vpn = VirtAddr::from(new_brk).floor();
+            let range = core::ops::Range {
+                start: end_vpn,
+                end: new_brk_vpn,
+            };
+            if self.memory_set.lock().await.areatree.is_overlap(&range) {
+                return None;
+            }
             self.memory_set
                 .lock()
                 .await
-                .append_to(VirtAddr(heap_bottom), VirtAddr(new_brk))
+                .append_to(last_area, VirtAddr(new_brk))
         };
         if result {
             self.set_program_brk(new_brk);
@@ -989,10 +1055,10 @@ impl ProcessControlBlock {
             follow_last_symlink
         );
 
-        if path_str==""{
-            return Ok(self.get_file(dirfd as usize).await?.get_path())
+        if path_str == "" {
+            return Ok(self.get_file(dirfd as usize).await?.get_path());
         }
-            // 1. 确定基准绝对路径 (base_path_string)
+        // 1. 确定基准绝对路径 (base_path_string)
         let base_path_string: String;
         if path_str.starts_with('/') {
             base_path_string = "/".to_string();
@@ -1033,13 +1099,12 @@ impl ProcessControlBlock {
         // 3. 准备传递给 VFS `find` 方法的 OpenFlags
         let find_flags = OpenFlags::empty(); // 或者一个基础的查找模式，如 O_PATH
         if follow_last_symlink {
-            match open_file(&normalized_path_to_find, find_flags,NONE_MODE) {
+            match open_file(&normalized_path_to_find, find_flags, NONE_MODE) {
                 Ok(found_vfs_node) => {
                     // 5. 从找到的 VfsNodeOps 获取其最终的绝对路径
                     return Ok(found_vfs_node.any().get_path()); // 返回 Result<String, SysErrNo>
                 }
                 Err(SysErrNo::ENOENT) => {
-                    
                     return Err(SysErrNo::ENOENT);
                 }
                 Err(e) => return Err(e),
@@ -1071,15 +1136,15 @@ impl ProcessControlBlock {
         Ok(())
     }
 
-    pub async fn join_proc(&self,waker:Waker){
-         self.main_task.lock().await.join(waker);
+    pub async fn join_proc(&self, waker: Waker) {
+        self.main_task.lock().await.join(waker);
     }
     pub async fn wake_all_waiters(&self) {
         let mut wait_wakers = self.wakers.lock().await;
         for (_, waker) in wait_wakers.iter() {
-            waker.wake_by_ref(); 
+            waker.wake_by_ref();
         }
-        wait_wakers.clear(); 
+        wait_wakers.clear();
     }
 }
 
@@ -1112,7 +1177,7 @@ pub struct TaskControlBlock {
     fut: UnsafeCell<Pin<Box<dyn Future<Output = i32> + 'static>>>,
     trap_cx: UnsafeCell<Option<Box<TrapContext>>>,
 
-    pub tms:UnsafeCell<TimeData>,
+    pub tms: UnsafeCell<TimeData>,
     // executor: SpinNoIrq<Arc<Executor>>,
     pub wait_wakers: UnsafeCell<VecDeque<Waker>>,
     // pub scheduler: SpinNoIrq<Arc<SpinNoIrq<Scheduler>>>,
@@ -1148,14 +1213,14 @@ pub struct TaskControlBlock {
     pub child_tid_ptr: Option<AtomicUsize>,
     pub need_clear_child_tid: AtomicBool,
     pub robust_list: Mutex<RobustList>,
-    pub uid:AtomicUsize,
-    noma_policy:AtomicUsize,
-    pub sleep_reason:spin::mutex::SpinMutex<WakeReason>,
+    pub uid: AtomicUsize,
+    noma_policy: AtomicUsize,
+    pub sleep_reason: spin::mutex::SpinMutex<WakeReason>,
     // pub cpu_set: AtomicU64,
 }
 impl TaskControlBlock {
     pub fn new(
-        is_init:bool,
+        is_init: bool,
         is_leader: bool,
         process_id: usize,
         page_table_token: usize,
@@ -1187,10 +1252,10 @@ impl TaskControlBlock {
             need_clear_child_tid: AtomicBool::new(clear_child_tid),
             robust_list: Mutex::new(RobustList::default()),
 
-            tms:UnsafeCell::new( TimeData::default()),
-            uid:AtomicUsize::new(0),
-            noma_policy:AtomicUsize::new(0),
-            sleep_reason:spin::mutex::SpinMutex::new(WakeReason::None),
+            tms: UnsafeCell::new(TimeData::default()),
+            uid: AtomicUsize::new(0),
+            noma_policy: AtomicUsize::new(0),
+            sleep_reason: spin::mutex::SpinMutex::new(WakeReason::None),
         }
     }
 
@@ -1239,11 +1304,10 @@ impl TaskControlBlock {
     pub fn set_uid(&self, uid: usize) {
         self.uid.store(uid, Ordering::Relaxed);
     }
-    pub fn uid(&self){
-
-        self.uid.load( Ordering::Acquire);
+    pub fn uid(&self) {
+        self.uid.load(Ordering::Acquire);
     }
-   
+
     pub fn is_exited(&self) -> bool {
         *(self.state.lock()) == TaskStatus::Zombie
     }
@@ -1318,65 +1382,57 @@ impl TaskControlBlock {
     pub fn set_need_resched(&self, need: bool) {
         self.need_resched.store(need, Ordering::Release);
     }
-    pub fn update_utime(&self){
-
-                    {unsafe { *self.tms.get() }}.update_utime();
+    pub fn update_utime(&self) {
+        { unsafe { *self.tms.get() } }.update_utime();
     }
-    pub fn update_stime(&self){
+    pub fn update_stime(&self) {
+        { unsafe { *self.tms.get() } }.update_stime();
+    }
+    /// Sets the wake reason for the task.
+    pub fn set_sleep_reason(&self, reason: WakeReason) {
+        *self.sleep_reason.lock() = reason;
+    }
+    pub fn set_lead(&self) {
+        self.is_leader.store(true, Ordering::Release);
+    }
+    pub fn set_noma_policy(&self, policy: usize) {
+        self.noma_policy.store(policy, Ordering::Release);
+    }
+    pub fn get_noma_policy(&self) -> usize {
+        self.noma_policy.load(Ordering::Acquire)
+    }
+    pub fn join(&self, waker: Waker) {
+        let task = waker.data() as *const Task;
+        unsafe { &*task }.set_state(TaskStatus::Blocking);
+        let wait_wakers = unsafe { &mut *self.wait_wakers.get() };
+        wait_wakers.push_back(waker);
+    }
+    pub async fn clear_child_tid(&self) -> Result<(), SysErrNo> {
+        if let Some(ctid_ptr) = &self.child_tid_ptr {
+            let ctid_addr = ctid_ptr.load(core::sync::atomic::Ordering::Relaxed);
+            if ctid_addr == 0 {
+                return Ok(());
+            }
 
-        {unsafe { *self.tms.get() }}.update_stime();
-}
-/// Sets the wake reason for the task.
-pub fn set_sleep_reason(&self, reason: WakeReason) {
-    *self.sleep_reason.lock() = reason;
-}
-pub fn set_lead(&self){
-      self.is_leader.store(true, Ordering::Release);
-}
-pub  fn set_noma_policy(&self, policy: usize) {
-    self.noma_policy.store(policy, Ordering::Release);
-}
-pub fn get_noma_policy(&self) -> usize {
-    self.noma_policy.load(Ordering::Acquire)
-}
-pub fn join(&self, waker: Waker) {
-    let task = waker.data() as *const Task;
-    unsafe { &*task }.set_state(TaskStatus::Blocking);
-    let wait_wakers = unsafe { &mut *self.wait_wakers.get() };
-    wait_wakers.push_back(waker);
-}
-pub async fn clear_child_tid(&self) -> Result<(), SysErrNo> {
-    
-    if let Some(ctid_ptr) = &self.child_tid_ptr {
-        let ctid_addr = ctid_ptr.load(core::sync::atomic::Ordering::Relaxed);
-        if ctid_addr == 0 {
-            return Ok(());
-        }
-        
-          if let Some(ctid) = &self.child_tid_ptr {
-        let ctid = ctid.load(core::sync::atomic::Ordering::Acquire);
-        let token = unsafe { *self.page_table_token.get() };
-       // 写入 0 到用户空间的 ctid 地址
-       {
-       *translated_refmut(token, ctid as *mut  u32)?=0u32;
-       }
-            // println!("ctid :{:#x}",ctid);
-            let mut futex_guard = GLOBAL_FUTEX_SYSTEM.lock();
-            if let Some(wait_queue) = futex_guard.get_mut(&(token, ctid)) {
-                wait_queue.wake_matching_waiters(1, u32::MAX); // 唤醒一个等待者
-                if wait_queue.is_empty() {
-                    futex_guard.remove(&(token, ctid));
+            if let Some(ctid) = &self.child_tid_ptr {
+                let ctid = ctid.load(core::sync::atomic::Ordering::Acquire);
+                let token = unsafe { *self.page_table_token.get() };
+                // 写入 0 到用户空间的 ctid 地址
+                {
+                    *translated_refmut(token, ctid as *mut u32)? = 0u32;
+                }
+                // println!("ctid :{:#x}",ctid);
+                let mut futex_guard = GLOBAL_FUTEX_SYSTEM.lock();
+                if let Some(wait_queue) = futex_guard.get_mut(&(token, ctid)) {
+                    wait_queue.wake_matching_waiters(1, u32::MAX); // 唤醒一个等待者
+                    if wait_queue.is_empty() {
+                        futex_guard.remove(&(token, ctid));
+                    }
                 }
             }
-        
+        }
+        Ok(())
     }
-    
-        
-        
-        
-    }
-    Ok(())
-}
 }
 
 pub fn new_fd_with_stdio() -> Vec<Option<FileDescriptor>> {

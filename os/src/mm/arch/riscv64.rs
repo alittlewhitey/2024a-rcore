@@ -1,4 +1,7 @@
-use crate::{config::PAGE_SIZE, mm::{MapPermission, PhysAddr, PhysPageNum}};
+use crate::{
+    config::PAGE_SIZE,
+    mm::{MapPermission, PhysAddr, PhysPageNum},
+};
 
 bitflags::bitflags! {
     /// Page-table entry flags.
@@ -23,7 +26,7 @@ bitflags::bitflags! {
         const D =   1 << 7;
         const COW=1<<8;
         const W_BACKUP= 1<<9;
-        
+
     }
 }
 pub const PAGE_LEVEL: usize = 3;
@@ -35,11 +38,13 @@ pub struct PageTableEntry {
     /// bits of page table entry
     pub bits: usize,
 }
-const PTE_V: usize = 1 << 0; 
+const PTE_V: usize = 1 << 0;
 impl PageTableEntry {
     pub fn new_table(paddr: PhysAddr) -> Self {
-        assert!(paddr.0%PAGE_SIZE==0);
-        PageTableEntry{bits: (paddr.0 >> 2) | (PTEFlags::V).bits() as usize}
+        assert!(paddr.0 % PAGE_SIZE == 0);
+        PageTableEntry {
+            bits: (paddr.0 >> 2) | (PTEFlags::V).bits() as usize,
+        }
     }
     const PHYS_ADDR_MASK: usize = (1 << 54) - (1 << 10); // bits 10..54
     /// Create a new page table entry
@@ -52,24 +57,23 @@ impl PageTableEntry {
     pub fn empty() -> Self {
         PageTableEntry { bits: 0 }
     }
-    pub fn is_write_back(&self)->bool{
-        let flags= self.flags();
+    pub fn is_write_back(&self) -> bool {
+        let flags = self.flags();
         flags.contains(PTEFlags::W_BACKUP)
     }
-    pub fn address(&self)->PhysAddr{
+    pub fn address(&self) -> PhysAddr {
         PhysAddr::from((self.bits << 2) & 0xFFFF_FFFF_F000)
     }
     /// Get the physical page number from the page table entry
     pub fn ppn(&self) -> PhysPageNum {
         (self.bits >> 10 & ((1usize << 44) - 1)).into()
     }
-    pub fn set_ppn(&mut self,paddr : PhysAddr){
-        self.bits = (self.bits & !Self::PHYS_ADDR_MASK)
-        | ((paddr.0>> 2) & Self::PHYS_ADDR_MASK);
+    pub fn set_ppn(&mut self, paddr: PhysAddr) {
+        self.bits = (self.bits & !Self::PHYS_ADDR_MASK) | ((paddr.0 >> 2) & Self::PHYS_ADDR_MASK);
     }
     /// Get the flags from the page table entry
     pub fn flags(&self) -> PTEFlags {
-        PTEFlags::from_bits_truncate(self.bits )
+        PTEFlags::from_bits_truncate(self.bits)
     }
     /// The page pointered by page table entry is valid?
     pub fn is_valid(&self) -> bool {
@@ -87,21 +91,19 @@ impl PageTableEntry {
     pub fn executable(&self) -> bool {
         (self.flags() & PTEFlags::X) != PTEFlags::empty()
     }
-  pub  fn set_flags(&mut self, flags: MapPermission) {
-        let flags = PTEFlags::from(flags) | PTEFlags::A | PTEFlags::D;
+    pub fn set_flags(&mut self, flags: PTEFlags) {
+        let flags = flags | PTEFlags::A | PTEFlags::D;
         debug_assert!(flags.intersects(PTEFlags::R | PTEFlags::X));
         self.bits = (self.bits & Self::PHYS_ADDR_MASK) | flags.bits() as usize;
     }
-   pub fn is_huge(&self) -> bool {
+    pub fn is_huge(&self) -> bool {
         PTEFlags::from_bits_truncate(self.bits).intersects(PTEFlags::R | PTEFlags::X)
     }
-    pub fn is_cow(&self)->bool{
+
+    pub fn is_cow(&self) -> bool {
         PTEFlags::from_bits_truncate(self.bits).contains(PTEFlags::COW)
     }
-       // 判断是否设置了 W_BACKUP
-    pub fn is_back_w(&self) -> bool {
-        self.flags().contains(PTEFlags::W_BACKUP)
-    }
+
     pub fn set_cow(&mut self) {
         let mut flags = self.flags();
         if flags.contains(PTEFlags::W) {
@@ -111,24 +113,23 @@ impl PageTableEntry {
         flags.insert(PTEFlags::COW);
         self.set_raw_flags(flags);
     }
-        /// 解除 COW 状态，并根据 W_BACKUP 恢复 W 权限
+    /// 解除 COW 状态，并根据 W_BACKUP 恢复 W 权限
     pub fn un_cow(&mut self) {
-            let mut flags = self.flags();
-    
-            if flags.contains(PTEFlags::W_BACKUP) {
-                flags.insert(PTEFlags::W);
-            }
-    
-            flags.remove(PTEFlags::COW);
-            flags.remove(PTEFlags::W_BACKUP);
-    
-            self.set_raw_flags(flags);
+        let mut flags = self.flags();
+
+        if flags.contains(PTEFlags::W_BACKUP) {
+            flags.insert(PTEFlags::W);
         }
+
+        flags.remove(PTEFlags::COW);
+        flags.remove(PTEFlags::W_BACKUP);
+
+        self.set_raw_flags(flags);
+    }
     // 内部使用：安全更新 flags 保留物理地址
     fn set_raw_flags(&mut self, flags: PTEFlags) {
         self.bits = (self.bits & Self::PHYS_ADDR_MASK) | flags.bits();
     }
-   
 }
 impl From<MapPermission> for PTEFlags {
     fn from(f: MapPermission) -> Self {

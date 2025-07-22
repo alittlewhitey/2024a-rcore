@@ -71,7 +71,7 @@ impl From<PageFaultError> for SysErrNo {
             PageFaultError::NotMmapType => SysErrNo::EINVAL,
             PageFaultError::RangeEmpty => SysErrNo::EBUSY,
             PageFaultError::VpnNotHandled => SysErrNo::EINVAL,
-            PageFaultError::AlreadyAllocated => SysErrNo::EEXIST,
+            PageFaultError::AlreadyAllocated => SysErrNo::EIO,
             PageFaultError::__ => SysErrNo::EFAULT,
         }
     }
@@ -80,13 +80,8 @@ impl From<PageFaultError> for SysErrNo {
 impl MemorySet {
 
    /// unmap 拆分 这个range两端的area
-pub fn munmap(
-    &mut self,
-    new_start: VirtPageNum,
-    new_end: VirtPageNum,
-   
-)  {
-    // 1. 找到所有与 [new_start, new_end) 有交集的旧 MapArea
+   pub async fn munmap(&mut self, new_start: VirtPageNum, new_end: VirtPageNum) {
+    // 1. Find all MapAreas overlapping with [new_start, new_end)
     let mut overlaps = Vec::new();
     for (&start, area) in self.areatree.range(..new_end) {
         if area.end_vpn().0 > new_start.0 {
@@ -94,41 +89,68 @@ pub fn munmap(
         }
     }
 
-    // 2. 对每个重叠的 area 进行拆分并保留左右两段
+    // 2. Process each overlapping MapArea
     for start in overlaps {
-        let  area = self.areatree.remove(&start).unwrap();
+        let mut area = self.areatree.remove(&start).unwrap();
         let a0 = area.start_vpn();
         let a1 = area.end_vpn();
         let r0 = new_start;
         let r1 = new_end;
 
-        // 左段：如果有
-        if a0 < r0 {
-            let  left = area.from_another_with_range(a0, r0);
-            self.areatree.push(left);
-        }
-        // 右段：如果有
-        if a1 > r1 {
-            let  right = area.from_another_with_range(r1, a1);
-            self.areatree.push(right);
-        }
+        // Calculate intersection
+        let intersect_start = a0.max(r0);
+        let intersect_end = a1.min(r1);
 
-        // **中间这部分 [r0, r1) 是要给新 area 用的**，
-        // 先把对应的 PTE 一个个清掉
-    
-        for vpn in r0.0.. r1.0 {
-            
-        if area.allocated(VirtPageNum(vpn))
+        if intersect_start < intersect_end {
 
-           { self.page_table.unmap(VirtPageNum(vpn));}
+        let (mut obj,left,right)=
+        if r0==a0 &&r1==a1{
+
+            (area,None,None)
+        }else
+        if 
+        r0 == intersect_start&&r1==intersect_end  {
+            // There is an intersection; split the area
+            let ( mid, right) = area.split3(intersect_start, intersect_end).await;
+            (mid ,Some(area),Some(right))
         }
-    
-        flush_all();
+        else if r0 == intersect_start{
+              let  right = area.split(r0).await;
+              (right, Some(area),None)
+        }
+        else if r1 == intersect_end{
+            let right  = area .split(r1).await;
+            (area,Some(right),None)
+        }
+        else {
+            (area,None,None)
+        };
+            // Unmap the middle segment (the part to be unmapped)
+            for vpn in obj.vpn_range {
+                if obj.data_frames.contains_key(&vpn) {
+                   obj.unmap_maybe_map(&mut self.page_table);
+                }
+            }
+            self.areatree.remove(&obj.start_vpn());
+
+            // Insert left segment (if it exists)
+            if let Some(left_area) = left {
+                self.areatree.push(left_area);
+            }
+            // Insert right segment (if it exists)
+            if let Some(right)  = right {
+                self.areatree.push(right);
+            }
+        } else {
+            // No intersection; reinsert the area unchanged
+            self.areatree.push(area);
+        }
     }
 
-   
- }
-    
+    // Flush all updates
+    flush_all();
+}
+
     /// 复制逻辑段内容
     pub fn clone_area(&mut self, start_vpn: VirtPageNum, another:&MemorySet) {
     //    self.areatree.debug_print();
@@ -381,15 +403,20 @@ let _ = memory_set.push(
         }
         memory_set
     }
-    fn map_elf(&mut self, elf: &ElfFile, offset: VirtAddr) -> TemplateRet<(VirtPageNum, VirtAddr,usize)> {
-        let tls=0;
+    fn map_elf(&mut self, elf: &ElfFile, offset: VirtAddr,need_tls:bool) -> TemplateRet<(VirtPageNum, VirtAddr,Option<usize>)> {
+        let mut tls=None;
         let elf_header = elf.header;
         let ph_count = elf_header.pt2.ph_count();
 
         let mut max_end_vpn = offset.floor();
         let mut header_va = 0;
         let mut has_found_header_va = false;
-
+    // 记录 TLS 模板位置与大小
+    let mut tls_template_va = 0;
+    let mut tls_filesz = 0;
+    let mut tls_memsz = 0;
+    let mut tls_align = PAGE_SIZE;
+    let mut tls_file_offset=0;
         for i in 0..ph_count {
             let ph = elf.program_header(i).unwrap();
             if ph.get_type().unwrap() == xmas_elf::program::Type::Load {
@@ -435,18 +462,62 @@ log::info!("[map_elf_load] segment {}: file_offset=0x{:x}, mem_size=0x{:x}, star
                     Some(&elf.input[ph.offset() as usize..(ph.offset() + ph.file_size()) as usize]),
                 )?;
             } 
-            else  if ph.get_type().unwrap()== xmas_elf::program::Type::Tls  {
-
-                
-            
-                       }
+            else  if ph.get_type().unwrap()== xmas_elf::program::Type::Tls &&need_tls  {
+                tls_template_va = (ph.virtual_addr() as usize + offset.0) /* 实际映射在 LOAD 段中的地址 */;
+                tls_filesz      = ph.file_size() as usize;
+                tls_memsz       = ph.mem_size()  as usize;
+                tls_align       = ph.align()     as usize;
+                tls_file_offset = ph.offset() as usize;
+            }
         }
+   // 第二步：如果存在 TLS，分配新地址空间并初始化
+   if tls_memsz > 0 {
+    // 在用户空间为 TLS 分配连续页
+    let hint_vpn = VirtPageNum(offset.0 / PAGE_SIZE);
+    let tls_start_vpn = self.areatree.alloc_aligned_pages(
+        (tls_memsz + PAGE_SIZE - 1) / PAGE_SIZE,
+        tls_align,
+        hint_vpn
+    ).unwrap();
+    let tls_start_va = VirtAddr(tls_start_vpn.0 * PAGE_SIZE);
+    let tls_end_va   = VirtAddr(tls_start_va.0 + tls_memsz);
+
+    // 映射新区域
+    let  tz_perm = MapPermission::U | MapPermission::R | MapPermission::W;
+    let tls_area = MapArea::new(
+        tls_start_va,
+        tls_end_va,
+        MapType::Framed,
+        tz_perm,
+        MapAreaType::Tls,
+    );
+    let template = &elf.input[tls_file_offset .. tls_file_offset + tls_filesz];
+    let tls_offset = 0;
+    max_end_vpn = tls_area.vpn_range.get_end();
+    // .tdata 模板拷贝
+    self.push_with_offset(
+        tls_area,
+        tls_offset,
+        Some(template),
+    )?;
+
+    // 剩余 .tbss 由 map_area zero-fill
+
+    // 最后设置 tp = base + memsz
+    let tp = tls_start_va.0 + tls_memsz;
+    log::info!("[map_elf_load] tp {:#x}",
+    tp
+);
+    tls= Some(tp);
+}
+
+
         Ok((max_end_vpn, header_va.into(),tls))
     }
     /// Include sections in elf and trampoline and TrapContext and user stack,
     /// also returns user_sp_base and entry point.
     /// 
-    pub fn from_elf(elf_data: &[u8]) -> (Self, usize, usize,Vec<Aux>,bool) {
+    pub fn from_elf(elf_data: &[u8]) -> (Self, usize, usize,Vec<Aux>,bool,Option<usize>) {
         let mut auxv = Vec::new();
         let mut memory_set = Self::new_from_kernel();
         // map trampoline
@@ -493,7 +564,7 @@ log::info!("[map_elf_load] segment {}: file_offset=0x{:x}, mem_size=0x{:x}, star
             let interp_file = interp_inode.unwrap();
             let interp_elf_data = interp_file.read_all();
             let interp_elf = xmas_elf::ElfFile::new(&interp_elf_data).unwrap();
-            memory_set.map_elf(&interp_elf, DL_INTERP_OFFSET.into()).unwrap();
+            memory_set.map_elf(&interp_elf, DL_INTERP_OFFSET.into(),false).unwrap();
 
             let interp_entry_point = interp_elf.header.pt2.entry_point() as usize + DL_INTERP_OFFSET;
 
@@ -523,7 +594,7 @@ log::info!("[map_elf_load] segment {}: file_offset=0x{:x}, mem_size=0x{:x}, star
         auxv.push(Aux::new(AuxType::SECURE, 0 as usize));
         auxv.push(Aux::new(AuxType::NOTELF, 0x112d as usize));
   
-        let (max_end_vpn, head_va,_tls) = memory_set.map_elf(&elf, VirtAddr(0)).unwrap();
+        let (max_end_vpn, head_va,tls) = memory_set.map_elf(&elf, VirtAddr(0),is_dl).unwrap();
          // Get ph_head addr for auxv
          let ph_head_addr = head_va.0 + elf.header.pt2.ph_offset() as usize;
          auxv.push(Aux {
@@ -538,16 +609,16 @@ log::info!("[map_elf_load] segment {}: file_offset=0x{:x}, mem_size=0x{:x}, star
         let user_heap_top = user_heap_bottom;
 
     // used in sbrk
-        memory_set.push(
+        memory_set.areatree.push(
             MapArea::new(
                 user_heap_bottom.into(),
-                (user_heap_top+PAGE_SIZE).into(),
+                user_heap_top.into(),
                 MapType::Framed,
                 MapPermission::R | MapPermission::W | MapPermission::U,
                 MapAreaType::Brk,
             ),
-            None,
-        ).unwrap();
+           
+        );
 //  println!("sbrk ppn :");
         // for (_,frame) in memory_set.areas.last().unwrap().data_frames.iter(){
         //     println!("ppn:{:#x}",frame.ppn().0);
@@ -567,6 +638,7 @@ log::info!("[map_elf_load] segment {}: file_offset=0x{:x}, mem_size=0x{:x}, star
             entry_point,
             auxv,
             is_dl,
+            tls,
         )
     }
    
@@ -805,6 +877,12 @@ pub async  fn safe_translate_va(&mut self, va: VirtAddr) -> Option<PhysAddr> {
      /// shrink the area to new_end
     #[allow(unused)]
     pub fn shrink_to(&mut self, start: VirtAddr, new_end: VirtAddr) -> bool {
+        // if start == new_end{
+        //     match self.areatree.remove(&start.floor()){
+        //         Some(_)=> return true,
+        //         None=>return false,
+        //     }
+        // }
         if let Some(area) = self
             .areatree.get_mut(&start.floor())
         {
@@ -842,7 +920,9 @@ pub async  fn safe_translate_va(&mut self, va: VirtAddr) -> Option<PhysAddr> {
     // trace!("[ manual_alloc_range_for_lazy] err:{:#?},vpn:{:#x}",e,vpn.0);
                 if matches!(e, PageFaultError::NotMmapType | PageFaultError::RangeEmpty| PageFaultError::AlreadyAllocated) {
                     {
-                  
+                        // 不是 mmap 类型的错误，或者范围为空，或者已经分配了
+                        // 直接跳过
+                        trace!("[manual_alloc_range_for_lazy]vpn:{:#x} is not mmap type,skip",vpn.0);
 
                     }
                 } else {
@@ -1044,7 +1124,9 @@ if area.vpn_range.contains(vpn) {
             true=>{
                 trace!("pte.flags(): {:?}", pte.flags());
 
-            if !pte.is_write_back(){
+            if !pte.is_write_back()&&pte.writable(){
+
+                println!("pte.flags(): {:?}", pte.flags());
                 area.debug_print();
                 panic!();
             }
@@ -1231,23 +1313,34 @@ pub async fn mprotect(&mut self, start: VirtAddr, size: usize, flags: MapPermiss
             let (mut mid, right) = area.split3(start_vpn, end_vpn).await;
             mid.update_flags(flags, &mut self.page_table);
 
-            assert!(self.areatree.insert(mid.start_vpn(), mid).is_none());
-            assert!(self.areatree.insert(right.start_vpn(), right).is_none());
+            if self.areatree.insert(mid.start_vpn(), mid).is_some(){
+                  panic!();
+            }
+            if self.areatree.insert(right.start_vpn(), right).is_some(){
+                panic!();
+            }
+;
         } else if start_vpn <= area.start_vpn() && area.start_vpn() < end_vpn {
             // split into 2 areas, update the left one
             let right = area.split(end_vpn).await;
             area.update_flags(flags, &mut self.page_table);
 
-            assert!(self.areatree.insert(right.start_vpn(), right).is_none());
+            if self.areatree.insert(right.start_vpn(), right).is_some(){
+                panic!();
+            }
         } else {
             // split into 2 areas, update the right one
             let mut right = area.split(start_vpn).await;
             right.update_flags(flags, &mut self.page_table);
 
-            assert!(self.areatree.insert(right.start_vpn(), right).is_none());
+            if self.areatree.insert(right.start_vpn(), right).is_some(){
+                panic!();
+            }
         }
 
-        assert!(self.areatree.insert(area.start_vpn(), area).is_none());
+        if self.areatree.insert(area.start_vpn(), area).is_some(){
+            panic!();
+        }
     }
 
 
@@ -1345,7 +1438,7 @@ pub async fn mremap(&mut self, old_start: VirtAddr, old_size: usize, new_size: u
                         .copy_from_slice(src_ppn.get_bytes_array());
                 }
 
-                    self.munmap(old_area_vpn_range.get_start(),old_area_vpn_range.get_end());
+                    self.munmap(old_area_vpn_range.get_start(),old_area_vpn_range.get_end()).await;
                     vpn.0<<PAGE_SIZE_BITS
                    }                    
                    else{
@@ -1432,6 +1525,7 @@ pub fn madvise_dontneed(&mut self, start_vpn: VirtPageNum, end_vpn: VirtPageNum)
     }
  flush_all();
 }
+
 }
 
 #[allow(unused)]
