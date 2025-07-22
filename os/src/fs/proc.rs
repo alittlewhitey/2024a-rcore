@@ -6,34 +6,40 @@ use alloc::collections::BTreeMap;
 use spin::Lazy;
 use spin::RwLock;
 pub struct ProcFile {
-    name: String,
-    content_fn: fn() -> String,
-    mode: u32,
-    offset: RwLock<usize>,
+    pub name: String,
+    pub content_fn: fn() -> String,
+    pub mode: u32,
+    // 这里不再保存 offset
 }
 
-impl ProcFile {
-    pub fn new(name: &str, content_fn: fn() -> String, mode: u32) -> Self {
+// 代表打开的文件描述符，每个打开都会有自己的实例
+pub struct ProcFileHandle {
+    pub file: Arc<ProcFile>,
+    offset: RwLock<usize>, // 每个fd单独维护偏移
+}
+
+impl ProcFileHandle {
+    pub fn new(file: Arc<ProcFile>) -> Self {
         Self {
-            name: String::from(name),
-            content_fn,
-            mode,
+            file,
             offset: RwLock::new(0),
         }
     }
 }
+
 #[async_trait]
-impl File for ProcFile {
+impl File for ProcFileHandle {
     async fn read<'a>(&self, mut buf: UserBuffer<'a>) -> Result<usize, SysErrNo> {
-        let content = (self.content_fn)();
+        let content = (self.file.content_fn)();
         let bytes = content.as_bytes();
+
         let mut offset = self.offset.write();
         if *offset >= bytes.len() {
             return Ok(0);
         }
-        let len = core::cmp::min(buf.len(), bytes.len());
+        let len = core::cmp::min(buf.len(), bytes.len() - *offset);
         if len > 0 {
-            buf.write(&bytes[..len]);
+            buf.write(&bytes[*offset..*offset + len]);
             *offset += len;
         }
         Ok(len)
@@ -41,16 +47,16 @@ impl File for ProcFile {
 
     fn fstat(&self) -> Kstat {
         Kstat {
-            st_mode: self.mode,
+            st_mode: self.file.mode,
             st_nlink: 1,
-            st_size: (self.content_fn)().len() as isize,
+            st_size: (self.file.content_fn)().len() as isize,
             ..Default::default()
         }
     }
 
     fn lseek(&self, offset: isize, whence: u32) -> SyscallRet {
         let mut current_offset = self.offset.write();
-        let file_size = (self.content_fn)().len();
+        let file_size = (self.file.content_fn)().len();
 
         const SEEK_SET: usize = 0;
         const SEEK_CUR: usize = 1;
@@ -63,7 +69,7 @@ impl File for ProcFile {
             _ => return Err(SysErrNo::EINVAL),
         };
 
-        if new_offset < 0 {
+        if new_offset < 0 || new_offset as usize > file_size {
             return Err(SysErrNo::EINVAL);
         }
         *current_offset = new_offset as usize;
@@ -77,16 +83,20 @@ impl File for ProcFile {
     fn writable<'a>(&'a self) -> TemplateRet<bool> {
         Ok(false)
     }
+
     fn get_path(&self) -> String {
-        format!("/proc/{}", self.name)
+        format!("/proc/{}", self.file.name)
     }
 }
-static PROC_FILES: Lazy<RwLock<BTreeMap<&'static str, Arc<dyn File>>>> =
+static PROC_FILES: Lazy<RwLock<BTreeMap<&'static str, Arc<ProcFile>>>> =
     Lazy::new(|| RwLock::new(BTreeMap::new()));
 
-pub fn register_proc_file(path: &'static str, file: Arc<dyn File>) {
+pub fn register_proc_file(path: &'static str, file: Arc<ProcFile>) {
     PROC_FILES.write().insert(path, file);
 }
-pub fn open_proc_file(path: &str) -> Option<Arc<dyn File>> {
-    PROC_FILES.read().get(path).map(Arc::clone)
+pub fn open_proc_file(path: &str) -> Option<Arc<ProcFileHandle>> {
+    PROC_FILES
+        .read()
+        .get(path)
+        .map(|file| Arc::new(ProcFileHandle::new(Arc::clone(file))))
 }

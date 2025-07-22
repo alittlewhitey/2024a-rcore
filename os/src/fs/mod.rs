@@ -596,12 +596,12 @@ pub async fn create_init_files() -> GeneralRet {
     //     DEFAULT_ROFILE_MODE,
     // )?.file()?;
 
-    let interrupts_file = Arc::new(ProcFile::new(
-        "interrupts",
-        crate::trap::get_syscall_count_string,
-        DEFAULT_ROFILE_MODE,
-    ));
-    register_proc_file("/proc/interrupts", interrupts_file);
+    let interrupts_file = Arc::new(proc::ProcFileHandle::new(Arc::new(ProcFile {
+        name: "interrupts".to_string(),
+        content_fn: crate::trap::get_syscall_count_string,
+        mode: DEFAULT_ROFILE_MODE,
+    })));
+    register_proc_file("/proc/interrupts", interrupts_file.file.clone());
 
     //创建/dev文件夹
     open_file(

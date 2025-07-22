@@ -14,16 +14,16 @@ use hashbrown::HashMap;
 use spin::Lazy;
 use spin::RwLock;
 
-static SYSCALL_COUNT: Lazy<RwLock<HashMap<usize, usize>>> =
+static INITRUPT_COUNT: Lazy<RwLock<HashMap<usize, usize>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
 
 pub fn record_interrupt(syscall_id: usize) {
-    let mut count = SYSCALL_COUNT.write();
+    let mut count = INITRUPT_COUNT.write();
     let e = count.entry(syscall_id).or_insert(0);
     *e += 1;
 }
 pub fn get_syscall_count_string() -> String {
-    let counts = SYSCALL_COUNT.read();
+    let counts = INITRUPT_COUNT.read();
     if counts.is_empty() {
         return String::new();
     }
@@ -592,7 +592,7 @@ pub async fn user_task_top() -> i32 {
 
                 Trap::Interrupt(Interrupt::SupervisorTimer) => {
                     set_next_trigger();
-
+                    // println!("interrupt: SupervisorTimer");
                     record_interrupt(7);
                     tf.trap_status = TrapStatus::Done;
                     on_timer_tick();
