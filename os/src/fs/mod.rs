@@ -1,47 +1,67 @@
 //! File trait & inode(dir, file, pipe, stdin, stdout)
 
-pub(crate) mod inode;
-mod stdio;
+pub mod dev;
 mod dirent;
-pub mod vfs;
+pub mod ext4;
 mod fd;
+pub(crate) mod inode;
+pub mod mount;
+pub mod net;
 pub mod pipe;
 mod poll;
-pub mod dev;
-pub mod net;
-pub mod mount;
-pub mod ext4;
+pub mod proc;
 pub mod select;
-mod proc;
+mod stdio;
+pub mod vfs;
 // pub mod shm;
-use core::{any::Any, future::Future, panic, task::{Context, Poll, Waker}};
+use crate::devices::get_blk_devices;
 use alloc::vec::Vec;
 use async_trait::async_trait;
+use core::{
+    any::Any,
+    future::Future,
+    panic,
+    task::{Context, Poll, Waker},
+};
 use dev::{find_device, open_device_file, register_device};
 use fdt_parser::Node;
-use crate::devices::get_blk_devices;
-use crate::syscall::get_syscall_count_string;
-use crate::{ drivers, fs::vfs::VfsManager, mm::UserBuffer, task::custom_noop_waker, timer::get_time_ms, utils::{ error::{ASyncRet, ASyscallRet, GeneralRet, SysErrNo, SyscallRet, TemplateRet}, string::{get_parent_path_and_filename, normalize_absolute_path}}};
-use alloc::{format, string::{String, ToString}, sync::Arc, vec};
+
+use crate::{
+    drivers,
+    fs::vfs::VfsManager,
+    mm::UserBuffer,
+    task::custom_noop_waker,
+    timer::get_time_ms,
+    utils::{
+        error::{ASyncRet, ASyscallRet, GeneralRet, SysErrNo, SyscallRet, TemplateRet},
+        string::{get_parent_path_and_filename, normalize_absolute_path},
+    },
+};
+use alloc::boxed::Box;
+use alloc::{
+    format,
+    string::{String, ToString},
+    sync::Arc,
+    vec,
+};
+pub use dirent::Dirent;
+pub use ext4::fs_stat;
+pub use ext4::EXT4FS;
+pub use fd::{FileClass, FileDescriptor};
 use hashbrown::{HashMap, HashSet};
 use inode::InodeType;
+pub use inode::OsInode;
 use lwext4_rust::{bindings::SEEK_END, InodeTypes};
-use spin::{Lazy, RwLock};
-pub use stat::Statfs;
+pub use poll::PollFuture;
 pub use poll::PollRequest;
+pub use proc::{open_proc_file, register_proc_file, ProcFile};
+use spin::{Lazy, RwLock};
+pub use stat::Kstat;
+pub use stat::Statfs;
 use vfs::vfs_ops::VfsNodeOps;
 pub use vfs::vfs_ops::VfsOps;
-pub use stat::Kstat;
-pub use inode::OsInode;
-pub use fd::{FileClass,FileDescriptor};
-pub use poll::{PollFuture};
-use alloc::boxed::Box;
-pub use dirent::Dirent;
-pub use ext4::EXT4FS;
-pub use ext4::fs_stat;
-pub use proc::{ProcFile,open_proc_file,register_proc_file};
-pub mod stat;
 pub const DEFAULT_ROFILE_MODE: u32 = 0o444;
+pub mod stat;
 pub const DEFAULT_FILE_MODE: u32 = 0o666;
 pub const DEFAULT_EXE_MODE: u32 = 0o755;
 pub const DEFAULT_DIR_MODE: u32 = 0o777;
@@ -71,7 +91,7 @@ bitflags! {
     }
 }
 #[repr(C)]
-#[derive(Debug, Clone,Copy)]
+#[derive(Debug, Clone, Copy)]
 pub struct PollFd {
     /// 文件描述符
     pub fd: i32,
@@ -87,43 +107,36 @@ pub struct PollFd {
 pub trait File: Send + Sync + Any {
     /// Reads data from the file into the provided buffer.
     /// The lifetime of the returned Future is bound by the lifetime of `buf`.
-    async fn read<'a>( 
-        &self,                 
-        mut buf: UserBuffer<'a>
-    ) -> Result<usize, SysErrNo>{
-unimplemented!()
-
-    } 
+    async fn read<'a>(&self, mut buf: UserBuffer<'a>) -> Result<usize, SysErrNo> {
+        unimplemented!()
+    }
 
     /// Writes data from the provided buffer to the file.
     /// The lifetime of the returned Future is bound by the lifetime of `buf`.
-    async fn write<'a>(
-        &self,
-        buf: UserBuffer<'a>
-    ) -> Result<usize, SysErrNo>{
+    async fn write<'a>(&self, buf: UserBuffer<'a>) -> Result<usize, SysErrNo> {
         unimplemented!()
     }
 
     /// whether the file is writable
-     fn writable<'a>(&'a self) -> TemplateRet<bool> {
-      unimplemented!();
-    }
-     fn readable<'a>(&'a self) -> TemplateRet<bool> {
+    fn writable<'a>(&'a self) -> TemplateRet<bool> {
         unimplemented!();
-      }
+    }
+    fn readable<'a>(&'a self) -> TemplateRet<bool> {
+        unimplemented!();
+    }
 
-    fn clear(&self){
+    fn clear(&self) {
         panic!("d");
     }
-      /// 获得文件信息
-      fn fstat(&self) -> Kstat{
+    /// 获得文件信息
+    fn fstat(&self) -> Kstat {
         unimplemented!("not support!");
-      }
-    
-      /// 设置偏移量,并非所有文件都支持
-      fn lseek(&self, _offset: isize, _whence: u32) -> SyscallRet {
-        return Err(SysErrNo::ESPIPE)
-      }
+    }
+
+    /// 设置偏移量,并非所有文件都支持
+    fn lseek(&self, _offset: isize, _whence: u32) -> SyscallRet {
+        return Err(SysErrNo::ESPIPE);
+    }
 
     fn as_any(&self) -> &dyn Any {
         unimplemented!();
@@ -137,15 +150,14 @@ unimplemented!()
     ///
     /// # 返回
     /// 一个 `PollEvents` 位掩码，指示哪些请求的事件（或错误/特殊事件）当前已就绪。
- 
-    fn poll(&self, events: PollEvents, waker_to_register: &Waker) -> PollEvents{
+
+    fn poll(&self, events: PollEvents, waker_to_register: &Waker) -> PollEvents {
         unimplemented!()
     }
 
-    fn get_path(&self)->String{
+    fn get_path(&self) -> String {
         unimplemented!();
     }
-      
 }
 
 /// The stat of a inode
@@ -177,15 +189,13 @@ bitflags! {
     }
 }
 
-pub use inode:: OpenFlags;
+pub use inode::OpenFlags;
 pub use stdio::{Stdin, Stdout};
 
-
-pub fn list_app(){
-     EXT4FS.lock().ls();
+pub fn list_app() {
+    EXT4FS.lock().ls();
 }
-pub fn root_inode() -> Arc<dyn VfsNodeOps > {
-   
+pub fn root_inode() -> Arc<dyn VfsNodeOps> {
     let root = EXT4FS.lock().root_inode();
     root
 }
@@ -194,7 +204,7 @@ pub fn fix_path(path: &str) -> String {
     if !path.starts_with("/") {
         path = format!("/{}", path);
     }
-    
+
     if path.ends_with("/") {
         path = path[0..path.len() - 1].to_string();
     }
@@ -228,52 +238,65 @@ fn as_inode_type(types: InodeTypes) -> InodeType {
         }
     }
 }
-pub fn create_file(abs_path: &str, flags: OpenFlags, mode: u32,vfs:Arc<dyn VfsNodeOps>) -> Result<FileDescriptor, SysErrNo> {
+pub fn create_file(
+    abs_path: &str,
+    flags: OpenFlags,
+    mode: u32,
+    vfs: Arc<dyn VfsNodeOps>,
+) -> Result<FileDescriptor, SysErrNo> {
     // 一定能找到,因为除了RootInode外都有父结点
     let parent_dir = vfs;
     let (readable, writable) = flags.read_write();
-     parent_dir.create(abs_path, as_ext4_de_type(flags.node_type()))?;
-    let inode= parent_dir.find(abs_path,flags,0)?;
+    parent_dir.create(abs_path, as_ext4_de_type(flags.node_type()))?;
+    let inode = parent_dir.find(abs_path, flags, 0)?;
     inode.fmode_set(mode)?;
     inode.set_owner(0, 0)?;
     inode.set_timestamps(None, Some((get_time_ms() / 1000) as u32), None)?;
     insert_inode_idx(abs_path, inode.clone());
     let osinode = OsInode::new(readable, writable, inode);
-    Ok(FileDescriptor::new(flags, FileClass::File(Arc::new(osinode))))
+    Ok(FileDescriptor::new(
+        flags,
+        FileClass::File(Arc::new(osinode)),
+    ))
 }
-
 
 /// 判断是否是动态链接文件
 pub fn is_dynamic_link_file(path: &str) -> bool {
     path.ends_with(".so") || path.contains(".so.")
 }
 ///只能找File文件
-pub fn find_inode(mut abs_path :&str, flags:OpenFlags)->Result<Arc<dyn VfsNodeOps>, SysErrNo>{
-      trace!("[find_inode] abs_path={}", abs_path);
-      // 如果是动态链接文件,转换路径
-      //判断是否是设备文件
-    
+pub fn find_inode(mut abs_path: &str, flags: OpenFlags) -> Result<Arc<dyn VfsNodeOps>, SysErrNo> {
+    trace!("[find_inode] abs_path={}", abs_path);
+    // 如果是动态链接文件,转换路径
+    //判断是否是设备文件
+
     if is_dynamic_link_file(abs_path) {
-     
         abs_path = map_dynamic_link_file(abs_path);
     }
     // let (ops,path) =  VfsManager::resolve_mnt_path(abs_path);
-    //  ops. 
+    //  ops.
     root_inode().find(&abs_path, flags, 0)
 }
 ///open file
-pub static mut TMP_NAME:usize= 0;
-pub fn open_file(mut abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileDescriptor, SysErrNo> {
-
-    log::debug!("[open] abs_path={},flags={:#?},mode:{}", abs_path,flags,mode);
-    if abs_path=="/"{
-        return Ok(FileDescriptor::new(flags,
-            
-            FileClass::File(Arc::new(OsInode::new(true,false,root_inode())))
-        
+pub static mut TMP_NAME: usize = 0;
+pub fn open_file(
+    mut abs_path: &str,
+    flags: OpenFlags,
+    mode: u32,
+) -> Result<FileDescriptor, SysErrNo> {
+    log::debug!(
+        "[open] abs_path={},flags={:#?},mode:{}",
+        abs_path,
+        flags,
+        mode
+    );
+    if abs_path == "/" {
+        return Ok(FileDescriptor::new(
+            flags,
+            FileClass::File(Arc::new(OsInode::new(true, false, root_inode()))),
         ));
     }
-    if abs_path=="/tmp"{
+    if abs_path == "/tmp" {
         // 如果带了 O_TMPFILE 就直接模拟 tmpfile 行为
         // 生成随机文件名，比如 /tmp/tmp-abc123
         let tmp_name = unsafe { TMP_NAME };
@@ -286,15 +309,16 @@ pub fn open_file(mut abs_path: &str, flags: OpenFlags, mode: u32) -> Result<File
         let tmp_flags = OpenFlags::O_CREATE | OpenFlags::O_EXCL | OpenFlags::O_RDWR;
         let inode = open_file(&full_path, tmp_flags, 0o600)?;
 
-        
-
-       return  Ok(inode)
+        return Ok(inode);
     }
-    
+
     //判断是否是设备文件
     if find_device(abs_path) {
         let device = open_device_file(abs_path)?;
-        return Ok(FileDescriptor{flags,file:FileClass::Abs(device)});
+        return Ok(FileDescriptor {
+            flags,
+            file: FileClass::Abs(device),
+        });
     }
     // 是否为虚拟文件 proc
     if let Some(proc_file) = open_proc_file(abs_path) {
@@ -305,34 +329,36 @@ pub fn open_file(mut abs_path: &str, flags: OpenFlags, mode: u32) -> Result<File
     }
     // 如果是动态链接文件,转换路径
     if is_dynamic_link_file(abs_path) {
-     
         abs_path = map_dynamic_link_file(abs_path);
     }
 
-    
     let abs_path = &fix_path(abs_path);
     // let (ops,path) =  VfsManager::resolve_mnt_path(abs_path);
-    let path =abs_path;
-    let (parent,_)= get_parent_path_and_filename(&path);
-    if find_device(&parent){
-        return Err(SysErrNo::ENOTDIR)
+    let path = abs_path;
+    let (parent, _) = get_parent_path_and_filename(&path);
+    if find_device(&parent) {
+        return Err(SysErrNo::ENOTDIR);
     }
     // info!("open_path:{:?},open_ops:{}",path,ops.name());
     // println!("open_file abs_path={},pid:{}", abs_path, current_task_may_uninit().map_or_else(|| 0, |f| f.get_pid()));
-    let mut inode: Option<Arc<dyn VfsNodeOps >> = None;
+    let mut inode: Option<Arc<dyn VfsNodeOps>> = None;
     // 同一个路径对应一个Inode
     if has_inode(abs_path) {
         inode = find_inode_idx(abs_path);
     } else {
-       
-        
-        let found_res =root_inode().find(&path, flags, 0);
+        let found_res = root_inode().find(&path, flags, 0);
         if found_res.clone().err() == Some(SysErrNo::ENOTDIR) {
-            warn!("[open_file] Error: A component in the path is not a directory: {:?}", &path);
+            warn!(
+                "[open_file] Error: A component in the path is not a directory: {:?}",
+                &path
+            );
             return Err(SysErrNo::ENOTDIR);
         }
         if found_res.clone().err() == Some(SysErrNo::ELOOP) {
-            warn!("[open_file] Error: Too many symbolic links (possible symlink loop) in path: {:?}", &path);
+            warn!(
+                "[open_file] Error: Too many symbolic links (possible symlink loop) in path: {:?}",
+                &path
+            );
             return Err(SysErrNo::ELOOP);
         }
         if let Ok(t) = found_res {
@@ -345,30 +371,33 @@ pub fn open_file(mut abs_path: &str, flags: OpenFlags, mode: u32) -> Result<File
     }
     if let Some(inode) = inode {
         if flags.contains(OpenFlags::O_DIRECTORY) && !inode.is_dir() {
-            warn!("[open_file] Error: A component in the path is not a directory: {:?}", path);
+            warn!(
+                "[open_file] Error: A component in the path is not a directory: {:?}",
+                path
+            );
             return Err(SysErrNo::ENOTDIR);
         }
         let (readable, writable) = flags.read_write();
         let osfile = OsInode::new(readable, writable, inode.clone());
         if flags.contains(OpenFlags::O_APPEND) {
-            osfile.lseek(0, SEEK_END )?;
+            osfile.lseek(0, SEEK_END)?;
         }
         if flags.contains(OpenFlags::O_TRUNC) {
             inode.truncate(0)?;
         }
-        return Ok(FileDescriptor::new(flags,FileClass::File(Arc::new(osfile))));
+        return Ok(FileDescriptor::new(
+            flags,
+            FileClass::File(Arc::new(osfile)),
+        ));
     }
 
     // 节点不存在
     if flags.contains(OpenFlags::O_CREATE) {
-        return create_file(&path, flags, mode,root_inode());
+        return create_file(&path, flags, mode, root_inode());
     }
     warn!("[open_file] Error: File or directory not found: {:?}", path);
     Err(SysErrNo::ENOENT)
 }
-
-
-
 
 pub static FD2NODE: Lazy<RwLock<HashMap<String, Arc<dyn VfsNodeOps>>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
@@ -421,8 +450,7 @@ pub fn map_dynamic_link_file(path: &str) -> &str {
 
     new_path.leak()
 }
-static DYNAMIC_PREFIX: Lazy<Vec<&'static str>> =
-    Lazy::new(|| vec![ "/glibc", "/musl","/usr"]);
+static DYNAMIC_PREFIX: Lazy<Vec<&'static str>> = Lazy::new(|| vec!["/glibc", "/musl", "/usr"]);
 
 static DYNAMIC_PATH: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     [
@@ -432,46 +460,27 @@ static DYNAMIC_PATH: Lazy<HashSet<&'static str>> = Lazy::new(|| {
         "/musl/lib/libc.so",
         "/musl/lib/tls_get_new-dtv_dso.so",
         "/glibc/lib/dlopen_dso.so",
-         "/glibc/lib/libc.so", 
-         
-         "/glibc/lib/libc.so.6", 
-
-         "/glibc/lib/libm.so.6", 
-
-         "/glibc/lib/libm.so", 
-         "/glibc/lib/tls_get_new-dtv_dso.so", 
-         "/glibc/lib/ld-linux-riscv64-lp64.so.1",
-    
-         "/glibc/lib/ld-linux-riscv64-lp64d.so.1",
-          "/glibc/lib/tls_align_dso.so", 
-          "/glibc/lib/tls_init_dso.so",
-          "/usr/lib/ld-musl-riscv64-sf.so.1",
-
-          "/usr/lib/ld-musl-loongarch-sf.so.1",
-           "/glibc/lib/ld-linux-loongarch-lp64.so.1",
-    
-         "/glibc/lib/ld-linux-loongarch-lp64d.so.1",
-
-         "/glibc/lib/ld-musl-loongarch-lp64d.so.1",
-
+        "/glibc/lib/libc.so",
+        "/glibc/lib/libc.so.6",
+        "/glibc/lib/libm.so.6",
+        "/glibc/lib/libm.so",
+        "/glibc/lib/tls_get_new-dtv_dso.so",
+        "/glibc/lib/ld-linux-riscv64-lp64.so.1",
+        "/glibc/lib/ld-linux-riscv64-lp64d.so.1",
+        "/glibc/lib/tls_align_dso.so",
+        "/glibc/lib/tls_init_dso.so",
+        "/usr/lib/ld-musl-riscv64-sf.so.1",
+        "/usr/lib/ld-musl-loongarch-sf.so.1",
+        "/glibc/lib/ld-linux-loongarch-lp64.so.1",
+        "/glibc/lib/ld-linux-loongarch-lp64d.so.1",
+        "/glibc/lib/ld-musl-loongarch-lp64d.so.1",
     ]
     .into_iter()
     .collect()
 });
 
-
-
-
-
-
-
-
-
-
-
-
 //
-const INITPROC_SH:&str = "
+const INITPROC_SH: &str = "
 cd /musl
 ./libctest_testcode.sh
 ./busybox_testcode.sh
@@ -538,18 +547,18 @@ const LOCALTIME: &str =
     "lrwxrwxrwx 1 root root 33 11月 18  2023 /etc/localtime -> /usr/share/zoneinfo/Asia/Shanghai\n";
 const PRELOAD: &str = "";
 
-pub async  fn create_init_files() -> GeneralRet {
+pub async fn create_init_files() -> GeneralRet {
     //创建/proc文件夹
     open_file(
         "/proc",
         OpenFlags::O_CREATE | OpenFlags::O_RDWR | OpenFlags::O_DIRECTORY,
-        0o555,
+        DEFAULT_DIR_MODE,
     )?;
     //创建/proc/mounts文件系统使用情况
     let mountsfile = open_file(
         "/proc/mounts",
         OpenFlags::O_CREATE | OpenFlags::O_RDWR,
-        DEFAULT_FILE_MODE,
+        DEFAULT_ROFILE_MODE,
     )?
     .file()?;
     let mut mountsinfo = String::from(MOUNTS);
@@ -568,7 +577,7 @@ pub async  fn create_init_files() -> GeneralRet {
     let memfile = open_file(
         "/proc/meminfo",
         OpenFlags::O_CREATE | OpenFlags::O_RDWR,
-        DEFAULT_ROFILE_MODE,
+        DEFAULT_FILE_MODE,
     )?
     .file()?;
     let mut meminfo = String::from(MEMINFO);
@@ -589,11 +598,10 @@ pub async  fn create_init_files() -> GeneralRet {
 
     let interrupts_file = Arc::new(ProcFile::new(
         "interrupts",
-        get_syscall_count_string,
-        0o444
+        crate::trap::get_syscall_count_string,
+        DEFAULT_ROFILE_MODE,
     ));
     register_proc_file("/proc/interrupts", interrupts_file);
-
 
     //创建/dev文件夹
     open_file(
@@ -613,7 +621,6 @@ pub async  fn create_init_files() -> GeneralRet {
     //注册设备/dev/cpu_dma_latency
     register_device("/dev/cpu_dma_latency");
 
- 
     //创建./dev/misc文件夹
     open_file(
         "/dev/misc",
@@ -670,7 +677,7 @@ pub async  fn create_init_files() -> GeneralRet {
     let localtimesize = localtimefile.write(localtimebuf).await?;
     debug!("create /etc/localtime with {} sizes", localtimesize);
 
-     let initshfile = open_file(
+    let initshfile = open_file(
         "/initproc.sh",
         OpenFlags::O_CREATE | OpenFlags::O_RDWR,
         DEFAULT_EXE_MODE,
@@ -682,7 +689,7 @@ pub async  fn create_init_files() -> GeneralRet {
         let sh = initsh.as_bytes_mut();
         initshvec.push(core::slice::from_raw_parts_mut(sh.as_mut_ptr(), sh.len()));
     }
-    let initshbuf=UserBuffer::new(initshvec);
+    let initshbuf = UserBuffer::new(initshvec);
     let initshsize = initshfile.write(initshbuf).await?;
 
     //创建/etc/passwd记录用户信息
@@ -723,10 +730,7 @@ pub async  fn create_init_files() -> GeneralRet {
     Ok(())
 }
 
-
-
-pub fn init(){
-    
+pub fn init() {
     crate::devices::prepare_drivers();
 
     if let Ok(fdt) = polyhal::mem::get_fdt() {
@@ -739,40 +743,45 @@ pub fn init(){
                     .map(|r| (r.address as usize, node))
             })
             .collect();
-    
+
         // 按物理地址排序，保证 address 小的先注册
         nodes_with_reg.sort_by_key(|(addr, _)| *addr);
-    
+
         // 依次注册
         for (addr, node) in nodes_with_reg {
             println!("node:{:#x}", addr);
             crate::devices::try_to_add_device(&node);
         }
     }
-    
+
     // 所有设备注册完毕后再统一初始化 IRQ
     crate::devices::regist_devices_irq();
 
-    
-    if !get_blk_devices().is_empty()  {
-    VfsManager::mount("/dev/vda", "/", "ext4", 0, None).unwrap();
-    create_file("/usr", OpenFlags::O_CREATE |OpenFlags:: O_DIRECTORY, DEFAULT_DIR_MODE, root_inode()).unwrap();
-    VfsManager::mount("/dev/vdb", "/usr", "ext4", 0, None).unwrap();
-    }
-    else{
+    if !get_blk_devices().is_empty() {
+        VfsManager::mount("/dev/vda", "/", "ext4", 0, None).unwrap();
+        create_file(
+            "/usr",
+            OpenFlags::O_CREATE | OpenFlags::O_DIRECTORY,
+            DEFAULT_DIR_MODE,
+            root_inode(),
+        )
+        .unwrap();
+        VfsManager::mount("/dev/vdb", "/usr", "ext4", 0, None).unwrap();
+    } else {
         panic!();
     }
-    let fut=create_init_files();
+    let fut = create_init_files();
     let mut pinned = Box::pin(fut);
     let waker = custom_noop_waker();
-        let mut ctx = Context::from_waker(&waker);
-    
-        match pinned.as_mut().poll(&mut ctx) {
-            Poll::Ready(res) => res.unwrap(),
-            Poll::Pending => {
-                panic!("KERNEL_ASSERTION_FAILURE: FileSystem::init returned Pending");
-            }
-        };
-    root_inode().set_timestamps(Some(0), Some(0), Some(0)).unwrap();
-}
+    let mut ctx = Context::from_waker(&waker);
 
+    match pinned.as_mut().poll(&mut ctx) {
+        Poll::Ready(res) => res.unwrap(),
+        Poll::Pending => {
+            panic!("KERNEL_ASSERTION_FAILURE: FileSystem::init returned Pending");
+        }
+    };
+    root_inode()
+        .set_timestamps(Some(0), Some(0), Some(0))
+        .unwrap();
+}

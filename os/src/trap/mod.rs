@@ -9,6 +9,33 @@ use crate::task::{
     current_process, current_task, current_task_may_uninit, exit_current, exit_proc,
     pick_next_task, run_task2, task_tick, yield_now, CurrentTask, TaskStatus,
 };
+use alloc::{collections::BTreeMap, string::String};
+use hashbrown::HashMap;
+use spin::Lazy;
+use spin::RwLock;
+
+static SYSCALL_COUNT: Lazy<RwLock<HashMap<usize, usize>>> =
+    Lazy::new(|| RwLock::new(HashMap::new()));
+
+pub fn record_interrupt(syscall_id: usize) {
+    let mut count = SYSCALL_COUNT.write();
+    let e = count.entry(syscall_id).or_insert(0);
+    *e += 1;
+}
+pub fn get_syscall_count_string() -> String {
+    let counts = SYSCALL_COUNT.read();
+    if counts.is_empty() {
+        return String::new();
+    }
+    let mut sorted_counts: alloc::vec::Vec<_> = counts.iter().collect();
+    sorted_counts.sort_by_key(|&(&id, _)| id);
+
+    let mut result = String::new();
+    for (id, count) in sorted_counts {
+        result.push_str(&alloc::format!("{:3}: {:10}\n", id, count));
+    }
+    result
+}
 use crate::timer::set_next_trigger;
 use crate::utils::error::SysErrNo;
 pub use context::user_return;
@@ -326,6 +353,7 @@ pub async fn user_task_top() -> i32 {
                     match irq_num {
                         // TIMER_IRQ
                         TIMER_IRQ => {
+                            record_interrupt(irq_num);
                             loongArch64::register::ticlr::clear_timer_interrupt();
                             set_next_trigger();
 
@@ -444,7 +472,7 @@ pub async fn user_task_top() -> i32 {
                         Err(err) => {
                             if err == SysErrNo::EAGAIN {
                                 tf.sepc -= 4;
-                                debug!(
+                                warn!(
                                     "\x1b[93m [Syscall]Err: {},syscall:{}\x1b[0m",
                                     err.str(),
                                     tf.regs.a7
@@ -565,6 +593,7 @@ pub async fn user_task_top() -> i32 {
                 Trap::Interrupt(Interrupt::SupervisorTimer) => {
                     set_next_trigger();
 
+                    record_interrupt(7);
                     tf.trap_status = TrapStatus::Done;
                     on_timer_tick();
                     if let Some(curr) = current_task_may_uninit() {

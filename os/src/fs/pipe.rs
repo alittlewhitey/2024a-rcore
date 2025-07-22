@@ -3,7 +3,7 @@ use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
 };
-use async_trait::async_trait; 
+use async_trait::async_trait;
 use core::{
     future::Future,
     pin::Pin,
@@ -12,9 +12,9 @@ use core::{
 use spin::Mutex;
 
 use crate::{
-    fs::{stat::StMode, File, Kstat, OpenFlags, PollEvents }, // 假设 SeekWhence 在这里
+    fs::{stat::StMode, File, Kstat, OpenFlags, PollEvents}, // 假设 SeekWhence 在这里
     mm::UserBuffer,
-    task::yield_now, 
+    task::yield_now,
     utils::error::{SysErrNo, TemplateRet},
 };
 
@@ -28,13 +28,13 @@ pub enum RingBufferStatus {
 }
 
 pub struct PipeRingBuffer {
-    arr: [u8; RING_BUFFER_SIZE], 
+    arr: [u8; RING_BUFFER_SIZE],
     head: usize,
     tail: usize,
     status: RingBufferStatus,
-    read_end_closed: bool,  
-    write_end_closed: bool, 
-    read_waiters: Vec<Waker>,  
+    read_end_closed: bool,
+    write_end_closed: bool,
+    read_waiters: Vec<Waker>,
     write_waiters: Vec<Waker>,
 }
 
@@ -98,12 +98,12 @@ impl PipeRingBuffer {
         }
     }
 
-
     pub fn write_byte(&mut self, byte: u8) -> Result<(), SysErrNo> {
         if self.status == RingBufferStatus::Full {
             return Err(SysErrNo::EAGAIN); // 缓冲区满
         }
-        if self.read_end_closed { // 如果读端已关闭
+        if self.read_end_closed {
+            // 如果读端已关闭
             return Err(SysErrNo::EPIPE); // Broken pipe
         }
 
@@ -116,7 +116,8 @@ impl PipeRingBuffer {
             RingBufferStatus::Normal
         };
 
-        if buffer_was_empty { // 从空变为非空，通知读者
+        if buffer_was_empty {
+            // 从空变为非空，通知读者
             self.notify_readers();
         }
         Ok(())
@@ -136,21 +137,29 @@ impl PipeRingBuffer {
             RingBufferStatus::Normal
         };
 
-        if buffer_was_full { // 从满变为不满，通知写者
+        if buffer_was_full {
+            // 从满变为不满，通知写者
             self.notify_writers();
         }
         Some(c)
     }
 
     pub fn available_read(&self) -> usize {
-        if self.status == RingBufferStatus::Empty { 0 }
-        else if self.tail > self.head { self.tail - self.head }
-        else { self.tail + RING_BUFFER_SIZE - self.head }
+        if self.status == RingBufferStatus::Empty {
+            0
+        } else if self.tail > self.head {
+            self.tail - self.head
+        } else {
+            self.tail + RING_BUFFER_SIZE - self.head
+        }
     }
 
     pub fn available_write(&self) -> usize {
-        if self.status == RingBufferStatus::Full { 0 }
-        else { RING_BUFFER_SIZE - self.available_read() }
+        if self.status == RingBufferStatus::Full {
+            0
+        } else {
+            RING_BUFFER_SIZE - self.available_read()
+        }
     }
 
     // all_write_ends_closed 现在由 write_end_closed 标志管理
@@ -161,19 +170,23 @@ pub struct Pipe {
     readable: bool,
     writable: bool,
     pub buffer: Arc<Mutex<PipeRingBuffer>>, // 共享的环形缓冲区
-    flags: Mutex<OpenFlags>,          // Pipe 自身的打开标志 (如 O_NONBLOCK)
+    flags: Mutex<OpenFlags>,                // Pipe 自身的打开标志 (如 O_NONBLOCK)
 }
 
 impl Pipe {
     pub fn read_end_with_buffer(buffer: Arc<Mutex<PipeRingBuffer>>, flags: OpenFlags) -> Self {
         Self {
-            readable: true, writable: false, buffer,
+            readable: true,
+            writable: false,
+            buffer,
             flags: Mutex::new(flags | OpenFlags::O_RDONLY),
         }
     }
     pub fn write_end_with_buffer(buffer: Arc<Mutex<PipeRingBuffer>>, flags: OpenFlags) -> Self {
         Self {
-            readable: false, writable: true, buffer,
+            readable: false,
+            writable: true,
+            buffer,
             flags: Mutex::new(flags | OpenFlags::O_WRONLY),
         }
     }
@@ -204,11 +217,13 @@ pub fn make_pipe(flags: OpenFlags) -> (Arc<Pipe>, Arc<Pipe>) {
 impl Drop for Pipe {
     fn drop(&mut self) {
         let mut buffer_guard = self.buffer.lock();
-        if self.readable { // 如果这是读端被 drop
+        if self.readable {
+            // 如果这是读端被 drop
             // log::trace!("Pipe read_end dropped. Notifying writers.");
             buffer_guard.mark_read_end_closed();
         }
-        if self.writable { // 如果这是写端被 drop
+        if self.writable {
+            // 如果这是写端被 drop
             // log::trace!("Pipe write_end dropped. Notifying readers.");
             buffer_guard.mark_write_end_closed();
         }
@@ -225,7 +240,8 @@ impl File for Pipe {
         let mut revents = PollEvents::empty();
         let mut buffer_guard = self.buffer.lock(); // 获取共享缓冲区的锁
 
-        if self.readable { // 如果是管道的读端
+        if self.readable {
+            // 如果是管道的读端
             if requested_events.contains(PollEvents::POLLIN) {
                 if buffer_guard.available_read() > 0 {
                     revents.insert(PollEvents::POLLIN); // 有数据可读
@@ -244,7 +260,8 @@ impl File for Pipe {
             }
         }
 
-        if self.writable { // 如果是管道的写端
+        if self.writable {
+            // 如果是管道的写端
             if requested_events.contains(PollEvents::POLLOUT) {
                 if buffer_guard.available_write() > 0 {
                     revents.insert(PollEvents::POLLOUT); // 有空间可写
@@ -252,7 +269,7 @@ impl File for Pipe {
                     // 读端已关闭，写入会导致 EPIPE，算是一种“可操作”的错误状态
                     revents.insert(PollEvents::POLLOUT); // 也可以是 POLLERR
                     revents.insert(PollEvents::POLLERR); // 写入会失败
-                    // revents.insert(PollEvents::POLLHUP); // 有些系统也可能报告HUP
+                                                         // revents.insert(PollEvents::POLLHUP); // 有些系统也可能报告HUP
                 } else {
                     // 缓冲区已满，且读端未关闭，注册 Waker 等待空间
                     buffer_guard.register_writer_waker(waker_to_register);
@@ -269,8 +286,12 @@ impl File for Pipe {
     }
 
     async fn read<'a>(&self, mut buf: UserBuffer<'a>) -> Result<usize, SysErrNo> {
-        if !self.readable { return Err(SysErrNo::EBADF); } // 非读端
-        if buf.is_empty() { return Ok(0); }
+        if !self.readable {
+            return Err(SysErrNo::EBADF);
+        } // 非读端
+        if buf.is_empty() {
+            return Ok(0);
+        }
 
         let mut total_bytes_read = 0usize;
 
@@ -278,25 +299,29 @@ impl File for Pipe {
         let mut buf_iter = buf.buffers.iter_mut(); // 获取可变的迭代器
         let mut current_user_segment = buf_iter.next();
         let mut current_user_segment_offset = 0;
-        loop { // 循环直到读取了数据，或遇到非阻塞情况，或EOF
+        loop {
+            // 循环直到读取了数据，或遇到非阻塞情况，或EOF
             let mut ring_buffer = self.buffer.lock();
             let available_to_read_now = ring_buffer.available_read();
 
             if available_to_read_now > 0 {
                 while let Some(segment) = current_user_segment {
                     while current_user_segment_offset < segment.len() && total_bytes_read < len {
-                        if let Some(byte_val) = ring_buffer.read_byte() { // read_byte 内部会 notify_writers
+                        if let Some(byte_val) = ring_buffer.read_byte() {
+                            // read_byte 内部会 notify_writers
                             // TODO: 使用安全的 copy_to_user_single_byte 或 UserBuffer::write_byte
                             // 假设 segment 是 &mut [u8]
                             segment[current_user_segment_offset] = byte_val;
                             current_user_segment_offset += 1;
                             total_bytes_read += 1;
-                        } else { // 应该不会发生，因为 available_to_read_now > 0
+                        } else {
+                            // 应该不会发生，因为 available_to_read_now > 0
                             drop(ring_buffer);
                             return Ok(total_bytes_read);
                         }
                     }
-                    if current_user_segment_offset == segment.len() { // 当前 segment 写满
+                    if current_user_segment_offset == segment.len() {
+                        // 当前 segment 写满
                         current_user_segment = buf_iter.next();
                         current_user_segment_offset = 0;
                         if current_user_segment.is_none() || total_bytes_read == len {
@@ -304,7 +329,8 @@ impl File for Pipe {
                             drop(ring_buffer);
                             return Ok(total_bytes_read);
                         }
-                    } else { // 用户buffer未满，但管道暂时空了
+                    } else {
+                        // 用户buffer未满，但管道暂时空了
                         drop(ring_buffer);
                         return Ok(total_bytes_read);
                     }
@@ -312,16 +338,19 @@ impl File for Pipe {
                 // 所有用户缓冲区都处理完毕
                 drop(ring_buffer);
                 return Ok(total_bytes_read);
-
-            } else { // available_to_read_now == 0
-                if ring_buffer.write_end_closed { // 写端已关闭，意味着EOF
+            } else {
+                // available_to_read_now == 0
+                if ring_buffer.write_end_closed {
+                    // 写端已关闭，意味着EOF
                     drop(ring_buffer);
                     return Ok(total_bytes_read); // 返回已读取的（可能是0）
                 }
                 // 缓冲区为空，且写端未关闭
                 if self.is_non_block() {
                     drop(ring_buffer);
-                    if total_bytes_read > 0 { return Ok(total_bytes_read); } // 如果已读到一些，返回
+                    if total_bytes_read > 0 {
+                        return Ok(total_bytes_read);
+                    } // 如果已读到一些，返回
                     return Err(SysErrNo::EAGAIN);
                 }
                 // 阻塞模式：需要等待。释放锁，让权，然后重试。
@@ -336,7 +365,9 @@ impl File for Pipe {
                 // 如果是阻塞模式，就需要等待。
                 // 鉴于这是 async fn，它应该返回 Pending 或等待一个 Future。
                 // 我们用一个简单的 Future 来等待 Waker。
-                struct PipeReadReady<'p> { pipe: &'p Pipe }
+                struct PipeReadReady<'p> {
+                    pipe: &'p Pipe,
+                }
                 impl<'p> Future for PipeReadReady<'p> {
                     type Output = ();
                     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -352,14 +383,18 @@ impl File for Pipe {
                 }
                 drop(ring_buffer); // 释放锁以便其他任务（如写者或唤醒者）可以访问
                 PipeReadReady { pipe: self }.await; // 等待被唤醒
-                // 唤醒后，loop 会重新开始，再次检查缓冲区
+                                                    // 唤醒后，loop 会重新开始，再次检查缓冲区
             }
         } // end loop
     } // end async fn read
 
     async fn write<'buf>(&self, buf: UserBuffer<'buf>) -> Result<usize, SysErrNo> {
-        if !self.writable { return Err(SysErrNo::EBADF); } // 非写端
-        if buf.is_empty() { return Ok(0); }
+        if !self.writable {
+            return Err(SysErrNo::EBADF);
+        } // 非写端
+        if buf.is_empty() {
+            return Ok(0);
+        }
 
         let mut total_bytes_written = 0usize;
         let mut buf_iter = buf.buffers.iter(); // UserBuffer 应该是 &[&[u8]]
@@ -368,7 +403,8 @@ impl File for Pipe {
 
         loop {
             let mut ring_buffer = self.buffer.lock();
-            if ring_buffer.read_end_closed { // 读端已关闭
+            if ring_buffer.read_end_closed {
+                // 读端已关闭
                 drop(ring_buffer);
                 log::warn!("Pipe write: Read end closed (EPIPE)");
                 // 向已关闭读端的管道写入应产生 SIGPIPE 信号给当前进程。
@@ -380,16 +416,21 @@ impl File for Pipe {
             let available_to_write_now = ring_buffer.available_write();
 
             if available_to_write_now > 0 {
-                while let Some(segment_data) = current_user_segment_data { // segment_data 是 &[u8]
-                    while current_user_segment_offset < segment_data.len() && total_bytes_written < buf.len() {
-                        if ring_buffer.available_write() > 0 { // 再次检查，因为可能在循环中被填满
+                while let Some(segment_data) = current_user_segment_data {
+                    // segment_data 是 &[u8]
+                    while current_user_segment_offset < segment_data.len()
+                        && total_bytes_written < buf.len()
+                    {
+                        if ring_buffer.available_write() > 0 {
+                            // 再次检查，因为可能在循环中被填满
                             // TODO: 从用户空间安全地读取 segment_data[current_user_segment_offset]
                             //       如果 UserBuffer 封装了安全性，则可以直接访问
                             let byte_to_write = segment_data[current_user_segment_offset];
                             ring_buffer.write_byte(byte_to_write).unwrap(); // write_byte 内部会 notify_readers
                             current_user_segment_offset += 1;
                             total_bytes_written += 1;
-                        } else { // 管道在中途写满了
+                        } else {
+                            // 管道在中途写满了
                             drop(ring_buffer);
                             return Ok(total_bytes_written);
                         }
@@ -401,7 +442,8 @@ impl File for Pipe {
                             drop(ring_buffer);
                             return Ok(total_bytes_written);
                         }
-                    } else { // 用户数据未写完，但管道满了
+                    } else {
+                        // 用户数据未写完，但管道满了
                         drop(ring_buffer);
                         return Ok(total_bytes_written);
                     }
@@ -409,15 +451,19 @@ impl File for Pipe {
                 // 所有用户数据都处理完毕
                 drop(ring_buffer);
                 return Ok(total_bytes_written);
-
-            } else { // available_to_write_now == 0, 缓冲区已满
+            } else {
+                // available_to_write_now == 0, 缓冲区已满
                 if self.is_non_block() {
                     drop(ring_buffer);
-                    if total_bytes_written > 0 { return Ok(total_bytes_written); }
+                    if total_bytes_written > 0 {
+                        return Ok(total_bytes_written);
+                    }
                     return Err(SysErrNo::EAGAIN);
                 }
                 // 阻塞模式：等待空间
-                struct PipeWriteReady<'p> { pipe: &'p Pipe }
+                struct PipeWriteReady<'p> {
+                    pipe: &'p Pipe,
+                }
                 impl<'p> Future for PipeWriteReady<'p> {
                     type Output = ();
                     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -439,20 +485,59 @@ impl File for Pipe {
         } // end loop
     } // end async fn write
 
-
-     /// whether the file is writable
-     fn writable<'a>(&'a self) -> TemplateRet<bool> {
+    /// whether the file is writable
+    fn writable<'a>(&'a self) -> TemplateRet<bool> {
         Ok(self.writable)
-      }
-       fn readable<'a>(&'a self) -> TemplateRet<bool> {
-          Ok(self.readable)
+    }
+    fn readable<'a>(&'a self) -> TemplateRet<bool> {
+        Ok(self.readable)
+    }
+    fn fstat(&self) -> Kstat {
+        Kstat {
+            st_mode: StMode::FIFO.bits(),
+            st_nlink: 1,
+            ..Kstat::default()
         }
-        fn fstat(&self) -> Kstat {
-            Kstat {
-                st_mode: StMode::FIFO.bits(),
-                st_nlink: 1,
-                ..Kstat::default()
-            }
-        }
+    }
 }
 
+// 辅助 Future，用于等待管道可写
+pub struct PipeWriteReady<'a> {
+    pub pipe: &'a Pipe,
+}
+impl<'a> Future for PipeWriteReady<'a> {
+    type Output = Result<(), SysErrNo>;
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut guard = self.pipe.buffer.lock();
+        if guard.read_end_closed {
+            // 如果读端关闭，写入将失败
+            return Poll::Ready(Err(SysErrNo::EPIPE));
+        }
+        if guard.available_write() > 0 {
+            Poll::Ready(Ok(()))
+        } else {
+            guard.register_writer_waker(cx.waker());
+            Poll::Pending
+        }
+    }
+}
+
+// 辅助 Future，用于等待管道可读
+pub struct PipeReadReady<'a> {
+    pub pipe: &'a Pipe,
+}
+impl<'a> Future for PipeReadReady<'a> {
+    type Output = Result<(), ()>; // Ok(()) 表示有数据或EOF，Err(()) 表示等待
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut guard = self.pipe.buffer.lock();
+        if guard.available_read() > 0 {
+            Poll::Ready(Ok(()))
+        } else if guard.write_end_closed {
+            // 没数据了，且写端关闭了，就是EOF
+            Poll::Ready(Ok(()))
+        } else {
+            guard.register_reader_waker(cx.waker());
+            Poll::Pending
+        }
+    }
+}

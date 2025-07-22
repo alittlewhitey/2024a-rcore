@@ -99,7 +99,6 @@ impl PageTableEntry {
     pub fn is_huge(&self) -> bool {
         PTEFlags::from_bits_truncate(self.bits).intersects(PTEFlags::R | PTEFlags::X)
     }
-
     pub fn is_cow(&self) -> bool {
         PTEFlags::from_bits_truncate(self.bits).contains(PTEFlags::COW)
     }

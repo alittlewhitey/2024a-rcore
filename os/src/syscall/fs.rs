@@ -2,7 +2,7 @@
 
 use crate::fs::dev::open_device_file;
 use crate::fs::mount::MNT_TABLE;
-use crate::fs::pipe::make_pipe;
+use crate::fs::pipe::{make_pipe, Pipe};
 use crate::fs::stat::Statx;
 use crate::fs::vfs::VfsManager;
 use crate::signal::{handle_pending_signals, SigSet};
@@ -24,7 +24,9 @@ use crate::fs::{
     find_inode, open_file, remove_inode_idx, File, FileClass, FileDescriptor, Kstat, OpenFlags,
     PollEvents, PollFd, PollFuture, PollRequest, Statfs,
 };
-use crate::mm::{put_data, translated_byte_buffer, translated_refmut, translated_str, UserBuffer};
+use crate::mm::{
+    get_target_ref, put_data, translated_byte_buffer, translated_refmut, translated_str, UserBuffer,
+};
 use crate::task::sleeplist::sleep_until;
 use crate::task::{current_process, current_task, current_token};
 use crate::timer::current_time;
@@ -63,8 +65,7 @@ pub async fn sys_write(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
             let bytes = file
                 .any()
                 .write(UserBuffer::new(translated_byte_buffer(token, buf, len)))
-                .await
-                ?;
+                .await?;
             Ok(bytes)
         }
         None => Err(SysErrNo::EBADF),
@@ -97,8 +98,7 @@ pub async fn sys_read(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
             let bytes = file
                 .any()
                 .read(UserBuffer::new(translated_byte_buffer(token, buf, len)))
-                .await
-                ?;
+                .await?;
             Ok(bytes)
         }
         None => Err(SysErrNo::EBADF),
@@ -1137,14 +1137,13 @@ pub async fn sys_ppoll(
         tmo_user_ptr,
         sigmask_user_ptr
     );
-    if handle_pending_signals(Some(0)).await{
-        return Err(SysErrNo::ERESTART)
+    if handle_pending_signals(Some(0)).await {
+        return Err(SysErrNo::ERESTART);
     }
     // 1. 处理 nfds = 0 的情况 (与 poll 类似，但要注意信号掩码的设置和恢复)
     if nfds == 0 {
         let mut old_sigmask_to_restore: Option<SigSet> = None;
         if !sigmask_user_ptr.is_null() {
-          
             let pcb_arc_temp = current_process(); // 获取 pcb 以访问 token 和任务状态
             let token_temp = pcb_arc_temp.memory_set.lock().await.token();
             match set_temp_sigmask_from_user(token_temp, sigmask_user_ptr).await {
@@ -2536,124 +2535,6 @@ pub async fn sys_sendfile(
     Ok(total_bytes_transferred)
 }
 
-pub async fn sys_copy_file_range(
-    fd_in: i32,
-    off_in_ptr: *mut i64,
-    fd_out: i32,
-    off_out_ptr: *mut i64,
-    len: usize,
-    _flags: u32,
-) -> SyscallRet {
-    log::trace!(
-        "[sys_copy_file_range] fd_in: {}, off_in: {:?}, fd_out: {}, off_out: {:?}, len: {}",
-        fd_in,
-        off_in_ptr,
-        fd_out,
-        off_out_ptr,
-        len
-    );
-
-    let proc = current_process();
-    let token = proc.memory_set.lock().await.token();
-
-    let in_file = proc.get_file(fd_in as usize).await?;
-    let out_file = proc.get_file(fd_out as usize).await?;
-
-    if !in_file.readable()? {
-        return Err(SysErrNo::EBADF);
-    }
-    if !out_file.writable()? {
-        return Err(SysErrNo::EBADF);
-    }
-
-    let mut read_offset = if off_in_ptr.is_null() {
-        in_file.lseek(0, SEEK_CUR)? as i64
-    } else {
-        proc.manual_alloc_type_for_lazy(off_in_ptr).await?;
-        unsafe { copy_from_user_exact(token, off_in_ptr)? }
-    };
-
-    let mut write_offset = if off_out_ptr.is_null() {
-        out_file.lseek(0, SEEK_CUR)? as i64
-    } else {
-        proc.manual_alloc_type_for_lazy(off_out_ptr).await?;
-        unsafe { copy_from_user_exact(token, off_out_ptr)? }
-    };
-
-    if read_offset < 0 || write_offset < 0 {
-        return Err(SysErrNo::EINVAL);
-    }
-
-    if read_offset as usize >= in_file.fstat().st_size as usize {
-        return Ok(0);
-    }
-
-    let mut buffer = [0u8; 4096];
-    let mut total_copied = 0;
-
-    while total_copied < len {
-        let to_copy = (len - total_copied).min(buffer.len());
-
-        let bytes_read = {
-            in_file.lseek(read_offset as isize, SEEK_SET)?;
-            let read_buf_slice = &mut buffer[..to_copy];
-            let static_read_slice = unsafe {
-                core::slice::from_raw_parts_mut(read_buf_slice.as_mut_ptr(), read_buf_slice.len())
-            };
-            let user_buf = UserBuffer::new(vec![static_read_slice]);
-            in_file.read(user_buf).await?
-        };
-
-        if bytes_read == 0 {
-            break;
-        }
-
-        let bytes_written = {
-            out_file.lseek(write_offset as isize, SEEK_SET)?;
-            let write_buf_slice = &mut buffer[..bytes_read];
-            let static_write_slice = unsafe {
-                core::slice::from_raw_parts_mut(write_buf_slice.as_mut_ptr(), write_buf_slice.len())
-            };
-            let user_buf = UserBuffer::new(vec![static_write_slice]);
-            out_file.write(user_buf).await?
-        };
-
-        read_offset += bytes_written as i64;
-        write_offset += bytes_written as i64;
-        total_copied += bytes_written;
-
-        if bytes_written < bytes_read {
-            break;
-        }
-    }
-
-    if off_in_ptr.is_null() {
-        in_file.lseek(read_offset as isize, SEEK_SET)?;
-    } else {
-        unsafe {
-            copy_to_user_bytes(
-                token,
-                VirtAddr::from(off_in_ptr as usize),
-                &read_offset.to_ne_bytes(),
-            )?;
-        }
-    }
-
-    if off_out_ptr.is_null() {
-        out_file.lseek(write_offset as isize, SEEK_SET)?;
-    } else {
-        unsafe {
-            copy_to_user_bytes(
-                token,
-                VirtAddr::from(off_out_ptr as usize),
-                &write_offset.to_ne_bytes(),
-            )?;
-        }
-    }
-
-    Ok(total_copied)
-}
-
 pub async fn sys_statfs(_path: *const u8, statfs: *mut Statfs) -> SyscallRet {
     trace!("[sys_statfs] path:{:#?} statfs:{:#?}", _path, statfs);
     current_process()
@@ -2917,7 +2798,7 @@ pub async fn sys_statx(
     // 这部分逻辑需要你的 VFS 提供一个强大的 lookup 函数
     // AT_SYMLINK_NOFOLLOW 决定了是否跟随符号链接
     let follow_symlinks = (flags & AT_SYMLINK_NOFOLLOW) == 0;
-   let inode= if path == "" {
+    let inode = if path == "" {
         if let Ok(fd) = proc.get_file(dirfd as usize).await {
             fd
         } else {
@@ -3022,4 +2903,275 @@ pub async fn sys_statx(
     } else {
         Err(SysErrNo::EFAULT) // 用户指针无效
     }
+}
+
+pub async fn sys_splice(
+    fd_in: i32,
+    off_in: *mut i64,
+    fd_out: i32,
+    off_out: *mut i64,
+    len: usize,
+    _flags: u32, // flags 被忽略
+) -> SyscallRet {
+    if len == 0 {
+        return Ok(0);
+    }
+    if fd_in < 0 || fd_out < 0 {
+        return Err(SysErrNo::EBADF);
+    }
+    let fd_in = fd_in as usize;
+    let fd_out = fd_out as usize;
+
+    let proc = current_process();
+
+    // 1. 获取文件描述符
+    let file_in = proc.get_file(fd_in).await?;
+    let file_out = proc.get_file(fd_out).await?;
+
+    let is_in_pipe = file_in.as_any().is::<Pipe>();
+    let is_out_pipe = file_out.as_any().is::<Pipe>();
+
+    // 2. 参数校验
+    if is_in_pipe && !off_in.is_null() {
+        return Err(SysErrNo::EINVAL);
+    }
+    if !is_in_pipe && off_in.is_null() {
+        return Err(SysErrNo::EINVAL);
+    }
+    if is_out_pipe && !off_out.is_null() {
+        return Err(SysErrNo::EINVAL);
+    }
+    if !is_out_pipe && off_out.is_null() {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    let token = proc.get_user_token().await;
+    // 检查 off_in/off_out 的值
+    if !off_in.is_null() && *get_target_ref(token, off_in)? < 0 {
+        return Err(SysErrNo::EINVAL);
+    }
+    if !off_out.is_null() && *get_target_ref(token, off_out)? < 0 {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    // 3. 分场景处理
+    let bytes_moved = if is_out_pipe {
+        // 场景一：文件 -> 管道
+        let file = file_in;
+        let pipe = file_out.as_any().downcast_ref::<Pipe>().unwrap();
+        let current_offset_in = translated_refmut(token, off_in)?;
+        // 获取文件大小
+        let fstat = file.fstat();
+        let file_size = fstat.st_size as i64;
+
+        if *current_offset_in >= file_size {
+            return Ok(0); // 边界测试2: off_in 超过文件大小
+        }
+
+        let remaining_in_file = (file_size - *current_offset_in) as usize;
+        let bytes_to_move = core::cmp::min(len, remaining_in_file); // 边界测试3: 文件剩余小于len
+        let mut bytes_moved_count = 0;
+
+        // 需要一个临时的单字节缓冲区
+        let mut byte_buf = [0u8; 1];
+
+        for _ in 0..bytes_to_move {
+            // a. 等待管道有空间
+            if let Err(e) = { crate::fs::pipe::PipeWriteReady { pipe } }.await {
+                // 如果管道的读端已关闭
+                return Err(e);
+            }
+
+            // b. 从文件读取一字节 (需要 File trait 支持 read_at)
+            // 假设你的 File trait 有 `async fn read_at(&self, offset: usize, buf: UserBuffer) -> Result<usize, SysErrNo>`
+            // 如果没有，你需要先 seek 再 read
+            if file.file().unwrap().read_at(
+                *current_offset_in as usize + bytes_moved_count,
+                &mut byte_buf,
+            )? != 1
+            {
+                // 读失败或未读满，中断
+                break;
+            }
+
+            // c. 向管道写入一字节
+            let mut guard = pipe.buffer.lock();
+            guard.write_byte(byte_buf[0]).map_err(|_| SysErrNo::EPIPE)?; // 写入失败通常是 EPIPE
+            drop(guard);
+
+            bytes_moved_count += 1;
+        }
+
+        *current_offset_in += bytes_moved_count as i64;
+        bytes_moved_count
+    } else if is_in_pipe {
+        // 场景二：管道 -> 文件
+        let pipe = file_in.as_any().downcast_ref::<Pipe>().unwrap();
+        let file = file_out;
+        let current_offset_out = translated_refmut(token, off_out)?;
+
+        let mut bytes_moved_count = 0;
+        let mut byte_buf = [0u8; 1];
+
+        for i in 0..len {
+            // a. 等待管道有数据
+            if i == 0 {
+                crate::fs::pipe::PipeReadReady { pipe }.await.unwrap(); // 等待直到有数据或EOF
+            }
+
+            let byte_to_write = {
+                let mut guard = pipe.buffer.lock();
+                if let Some(byte) = guard.read_byte() {
+                    byte
+                } else {
+                    // 没有数据了（因为 PipeReadReady 返回了），而且 write_end 肯定关闭了
+                    break; // 退出循环
+                }
+            };
+
+            // b. 准备单字节缓冲区
+            byte_buf[0] = byte_to_write;
+            let vbs_file = file.file().unwrap();
+
+            // c. 向文件写入一字节
+            // 假设你的 File trait 有 `async fn write_at(&self, offset: usize, buf: UserBuffer) -> Result<usize, SysErrNo>`
+            if vbs_file.write_at(*current_offset_out as usize + bytes_moved_count, &byte_buf)? != 1
+            {
+                // 写失败或未写满，中断
+                warn!(
+                    "[sys_splice] Failed to write byte to file at offset {}",
+                    *current_offset_out + bytes_moved_count as i64
+                );
+                break;
+            }
+
+            bytes_moved_count += 1;
+        }
+
+        *current_offset_out += bytes_moved_count as i64;
+        bytes_moved_count
+    } else {
+        // 不支持 文件->文件 或 管道->管道
+        return Err(SysErrNo::EINVAL);
+    };
+
+    Ok(bytes_moved)
+}
+
+pub async fn sys_copy_file_range(
+    fd_in: i32,
+    off_in_ptr: *mut i64,
+    fd_out: i32,
+    off_out_ptr: *mut i64,
+    len: usize,
+    _flags: u32,
+) -> SyscallRet {
+    log::trace!(
+        "[sys_copy_file_range] fd_in: {}, off_in: {:?}, fd_out: {}, off_out: {:?}, len: {}",
+        fd_in,
+        off_in_ptr,
+        fd_out,
+        off_out_ptr,
+        len
+    );
+
+    let proc = current_process();
+    let token = proc.memory_set.lock().await.token();
+
+    let in_file = proc.get_file(fd_in as usize).await?;
+    let out_file = proc.get_file(fd_out as usize).await?;
+
+    if !in_file.readable()? {
+        return Err(SysErrNo::EBADF);
+    }
+    if !out_file.writable()? {
+        return Err(SysErrNo::EBADF);
+    }
+
+    let mut read_offset = if off_in_ptr.is_null() {
+        in_file.lseek(0, SEEK_CUR)? as i64
+    } else {
+        proc.manual_alloc_type_for_lazy(off_in_ptr).await?;
+        unsafe { copy_from_user_exact(token, off_in_ptr)? }
+    };
+
+    let mut write_offset = if off_out_ptr.is_null() {
+        out_file.lseek(0, SEEK_CUR)? as i64
+    } else {
+        proc.manual_alloc_type_for_lazy(off_out_ptr).await?;
+        unsafe { copy_from_user_exact(token, off_out_ptr)? }
+    };
+
+    if read_offset < 0 || write_offset < 0 {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    if read_offset as usize >= in_file.fstat().st_size as usize {
+        return Ok(0);
+    }
+
+    let mut buffer = [0u8; 4096];
+    let mut total_copied = 0;
+
+    while total_copied < len {
+        let to_copy = (len - total_copied).min(buffer.len());
+
+        let bytes_read = {
+            in_file.lseek(read_offset as isize, SEEK_SET)?;
+            let read_buf_slice = &mut buffer[..to_copy];
+            let static_read_slice = unsafe {
+                core::slice::from_raw_parts_mut(read_buf_slice.as_mut_ptr(), read_buf_slice.len())
+            };
+            let user_buf = UserBuffer::new(vec![static_read_slice]);
+            in_file.read(user_buf).await?
+        };
+
+        if bytes_read == 0 {
+            break;
+        }
+
+        let bytes_written = {
+            out_file.lseek(write_offset as isize, SEEK_SET)?;
+            let write_buf_slice = &mut buffer[..bytes_read];
+            let static_write_slice = unsafe {
+                core::slice::from_raw_parts_mut(write_buf_slice.as_mut_ptr(), write_buf_slice.len())
+            };
+            let user_buf = UserBuffer::new(vec![static_write_slice]);
+            out_file.write(user_buf).await?
+        };
+
+        read_offset += bytes_written as i64;
+        write_offset += bytes_written as i64;
+        total_copied += bytes_written;
+
+        if bytes_written < bytes_read {
+            break;
+        }
+    }
+
+    if off_in_ptr.is_null() {
+        in_file.lseek(read_offset as isize, SEEK_SET)?;
+    } else {
+        unsafe {
+            copy_to_user_bytes(
+                token,
+                VirtAddr::from(off_in_ptr as usize),
+                &read_offset.to_ne_bytes(),
+            )?;
+        }
+    }
+
+    if off_out_ptr.is_null() {
+        out_file.lseek(write_offset as isize, SEEK_SET)?;
+    } else {
+        unsafe {
+            copy_to_user_bytes(
+                token,
+                VirtAddr::from(off_out_ptr as usize),
+                &write_offset.to_ne_bytes(),
+            )?;
+        }
+    }
+
+    Ok(total_copied)
 }

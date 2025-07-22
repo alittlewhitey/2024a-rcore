@@ -124,27 +124,23 @@ pub fn main(hart_id: usize) -> ! {
     fs::init();
     // fs::list_app();
 
+    task::add_initproc("/final", "/final/busybox", "sh ./copy-file-range-test.sh");
+    // task::add_initproc("/final", "/final/busybox", "sh ./interrupts-test.sh");
     // task::add_initproc("/musl", "/musl/busybox",  "sh /musl/ltp_testcode.sh");
-    task::add_initproc("/", "/musl/busybox", "sh /initproc.sh");
+    // task::add_initproc("/", "/musl/busybox", "sh");
     //  task::add_initproc("/basic", "/basic/sigtest", "");
 
     //  task::add_initproc("/glibc", "/musl/busybox", "sh cyclictest_testcode.sh");
     // task::add_initproc("/musl", "/musl/busybox", "sh run-dynamic.sh");
 
     // task::add_initproc("/musl", "/argexe", "sh run-dynamic.sh sadsadagg");
-    // task::add_initproc("/glibc", "/glibc/busybox", "sh run-static.sh");
+    // task::add_initproc("/musl", "/musl/busybox", "sh run-static.sh");
     // task::add_initproc("/musl", "/mmap", "");
 
     // task::add_initproc("/glibc", "/glibc/busybox", "sh");
     // task::add_initproc("/musl", "/musl/busybox", "sh ./libcbench_testcode.sh");
 
-
-    // task::add_initproc("/musl", "/musl/busybox", "sh /disk/run-static.sh");
-    // task::add_initproc("/musl", "/musl/busybox", "echo hello");
-    task::add_initproc("/musl", "/musl/busybox", "sh");
-
     //  task::add_initproc("/disk", "/musl/busybox", "sh /disk/run-dynamic.sh");
-
 
     //  task::add_initproc("/musl", "/musl/hackbench", "");
     //  task::add_initproc("/glibc", "/glibc/basic/mmap", "");

@@ -1,10 +1,10 @@
+use crate::fs::{async_trait, format, Arc, File, Kstat, String};
+use crate::mm::UserBuffer;
+use crate::utils::error::{SysErrNo, SyscallRet, TemplateRet};
+use crate::Box;
 use alloc::collections::BTreeMap;
 use spin::Lazy;
 use spin::RwLock;
-use crate::fs::{async_trait,String,File,Kstat,Arc,get_syscall_count_string,format};
-use crate::mm::UserBuffer;
-use crate::utils::error::{SysErrNo,TemplateRet,SyscallRet};
-use crate::Box;
 pub struct ProcFile {
     name: String,
     content_fn: fn() -> String,
@@ -14,7 +14,12 @@ pub struct ProcFile {
 
 impl ProcFile {
     pub fn new(name: &str, content_fn: fn() -> String, mode: u32) -> Self {
-        Self { name: String::from(name), content_fn, mode, offset: RwLock::new(0),}
+        Self {
+            name: String::from(name),
+            content_fn,
+            mode,
+            offset: RwLock::new(0),
+        }
     }
 }
 #[async_trait]
@@ -72,7 +77,7 @@ impl File for ProcFile {
     fn writable<'a>(&'a self) -> TemplateRet<bool> {
         Ok(false)
     }
-    fn get_path(&self)->String{
+    fn get_path(&self) -> String {
         format!("/proc/{}", self.name)
     }
 }
