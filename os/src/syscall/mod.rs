@@ -165,6 +165,14 @@ pub async fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         SYSCALL_MPROTECT=>sys_mprotect(args[0], args[1],args[2] ).await,
         SYSCALL_PIPE2=> sys_pipe2(args[0] as *mut i32 , args[1]as u32).await,
         SYSCALL_SENDFILE=>sys_sendfile(args[0]  as i32,args[1] as i32 , args[2] as *mut isize , args[3]).await,
+        SYSCALL_COPY_FILE_RANGE => sys_copy_file_range(
+            args[0] as i32,
+            args[1] as *mut i64,
+            args[2] as i32,
+            args[3] as *mut i64,
+            args[4],
+            args[5] as u32
+        ).await,
         SYSCALL_STATFS=>sys_statfs(args[0] as *const u8, args[1] as *mut crate::fs::Statfs).await,
         SYSCALL_LOG =>sys_syslog(args[0] as isize, args[1] as *const u8, args[2]),
         SYSCALL_INFO =>sys_sysinfo(args[0] as *const u8 ).await,

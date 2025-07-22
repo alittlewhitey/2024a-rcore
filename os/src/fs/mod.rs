@@ -588,6 +588,7 @@ pub async  fn create_init_files() -> GeneralRet {
     // )?.file()?;
 
     let interrupts_file = Arc::new(ProcFile::new(
+        "interrupts",
         get_syscall_count_string,
         0o444
     ));
