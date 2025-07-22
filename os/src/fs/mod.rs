@@ -12,6 +12,7 @@ pub mod net;
 pub mod mount;
 pub mod ext4;
 pub mod select;
+mod proc;
 // pub mod shm;
 use core::{any::Any, future::Future, panic, task::{Context, Poll, Waker}};
 use alloc::vec::Vec;
@@ -19,7 +20,7 @@ use async_trait::async_trait;
 use dev::{find_device, open_device_file, register_device};
 use fdt_parser::Node;
 use crate::devices::get_blk_devices;
-
+use crate::syscall::get_syscall_count_string;
 use crate::{ drivers, fs::vfs::VfsManager, mm::UserBuffer, task::custom_noop_waker, timer::get_time_ms, utils::{ error::{ASyncRet, ASyscallRet, GeneralRet, SysErrNo, SyscallRet, TemplateRet}, string::{get_parent_path_and_filename, normalize_absolute_path}}};
 use alloc::{format, string::{String, ToString}, sync::Arc, vec};
 use hashbrown::{HashMap, HashSet};
@@ -38,7 +39,9 @@ use alloc::boxed::Box;
 pub use dirent::Dirent;
 pub use ext4::EXT4FS;
 pub use ext4::fs_stat;
+pub use proc::{ProcFile,open_proc_file,register_proc_file};
 pub mod stat;
+pub const DEFAULT_ROFILE_MODE: u32 = 0o444;
 pub const DEFAULT_FILE_MODE: u32 = 0o666;
 pub const DEFAULT_EXE_MODE: u32 = 0o755;
 pub const DEFAULT_DIR_MODE: u32 = 0o777;
@@ -293,6 +296,13 @@ pub fn open_file(mut abs_path: &str, flags: OpenFlags, mode: u32) -> Result<File
         let device = open_device_file(abs_path)?;
         return Ok(FileDescriptor{flags,file:FileClass::Abs(device)});
     }
+    // 是否为虚拟文件 proc
+    if let Some(proc_file) = open_proc_file(abs_path) {
+        return Ok(FileDescriptor {
+            flags,
+            file: FileClass::Abs(proc_file),
+        });
+    }
     // 如果是动态链接文件,转换路径
     if is_dynamic_link_file(abs_path) {
      
@@ -533,7 +543,7 @@ pub async  fn create_init_files() -> GeneralRet {
     open_file(
         "/proc",
         OpenFlags::O_CREATE | OpenFlags::O_RDWR | OpenFlags::O_DIRECTORY,
-        DEFAULT_DIR_MODE,
+        0o555,
     )?;
     //创建/proc/mounts文件系统使用情况
     let mountsfile = open_file(
@@ -558,7 +568,7 @@ pub async  fn create_init_files() -> GeneralRet {
     let memfile = open_file(
         "/proc/meminfo",
         OpenFlags::O_CREATE | OpenFlags::O_RDWR,
-        DEFAULT_FILE_MODE,
+        DEFAULT_ROFILE_MODE,
     )?
     .file()?;
     let mut meminfo = String::from(MEMINFO);
@@ -570,6 +580,21 @@ pub async  fn create_init_files() -> GeneralRet {
     let membuf = UserBuffer::new(memvec);
     let memsize = memfile.write(membuf).await?;
     debug!("create /proc/meminfo with {} sizes", memsize);
+    // 创建空的 /proc/interrupts 文件
+    // let intfile = open_file(
+    //     "/proc/interrupts",
+    //     OpenFlags::O_CREATE | OpenFlags::O_RDWR,
+    //     DEFAULT_ROFILE_MODE,
+    // )?.file()?;
+
+    let interrupts_file = Arc::new(ProcFile::new(
+        "interrupts",
+        get_syscall_count_string,
+        0o444
+    ));
+    register_proc_file("/proc/interrupts", interrupts_file);
+
+
     //创建/dev文件夹
     open_file(
         "/dev",

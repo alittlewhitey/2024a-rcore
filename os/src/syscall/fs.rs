@@ -2536,6 +2536,124 @@ pub async fn sys_sendfile(
     Ok(total_bytes_transferred)
 }
 
+pub async fn sys_copy_file_range(
+    fd_in: i32,
+    off_in_ptr: *mut i64,
+    fd_out: i32,
+    off_out_ptr: *mut i64,
+    len: usize,
+    _flags: u32,
+) -> SyscallRet {
+    log::trace!(
+        "[sys_copy_file_range] fd_in: {}, off_in: {:?}, fd_out: {}, off_out: {:?}, len: {}",
+        fd_in,
+        off_in_ptr,
+        fd_out,
+        off_out_ptr,
+        len
+    );
+
+    let proc = current_process();
+    let token = proc.memory_set.lock().await.token();
+
+    let in_file = proc.get_file(fd_in as usize).await?;
+    let out_file = proc.get_file(fd_out as usize).await?;
+
+    if !in_file.readable()? {
+        return Err(SysErrNo::EBADF);
+    }
+    if !out_file.writable()? {
+        return Err(SysErrNo::EBADF);
+    }
+
+    let mut read_offset = if off_in_ptr.is_null() {
+        in_file.lseek(0, SEEK_CUR)? as i64
+    } else {
+        proc.manual_alloc_type_for_lazy(off_in_ptr).await?;
+        unsafe { copy_from_user_exact(token, off_in_ptr)? }
+    };
+
+    let mut write_offset = if off_out_ptr.is_null() {
+        out_file.lseek(0, SEEK_CUR)? as i64
+    } else {
+        proc.manual_alloc_type_for_lazy(off_out_ptr).await?;
+        unsafe { copy_from_user_exact(token, off_out_ptr)? }
+    };
+
+    if read_offset < 0 || write_offset < 0 {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    if read_offset as usize >= in_file.fstat().st_size as usize {
+        return Ok(0);
+    }
+
+    let mut buffer = [0u8; 4096];
+    let mut total_copied = 0;
+
+    while total_copied < len {
+        let to_copy = (len - total_copied).min(buffer.len());
+
+        let bytes_read = {
+            in_file.lseek(read_offset as isize, SEEK_SET)?;
+            let read_buf_slice = &mut buffer[..to_copy];
+            let static_read_slice = unsafe {
+                core::slice::from_raw_parts_mut(read_buf_slice.as_mut_ptr(), read_buf_slice.len())
+            };
+            let user_buf = UserBuffer::new(vec![static_read_slice]);
+            in_file.read(user_buf).await?
+        };
+
+        if bytes_read == 0 {
+            break;
+        }
+
+        let bytes_written = {
+            out_file.lseek(write_offset as isize, SEEK_SET)?;
+            let write_buf_slice = &mut buffer[..bytes_read];
+            let static_write_slice = unsafe {
+                core::slice::from_raw_parts_mut(write_buf_slice.as_mut_ptr(), write_buf_slice.len())
+            };
+            let user_buf = UserBuffer::new(vec![static_write_slice]);
+            out_file.write(user_buf).await?
+        };
+
+        read_offset += bytes_written as i64;
+        write_offset += bytes_written as i64;
+        total_copied += bytes_written;
+
+        if bytes_written < bytes_read {
+            break;
+        }
+    }
+
+    if off_in_ptr.is_null() {
+        in_file.lseek(read_offset as isize, SEEK_SET)?;
+    } else {
+        unsafe {
+            copy_to_user_bytes(
+                token,
+                VirtAddr::from(off_in_ptr as usize),
+                &read_offset.to_ne_bytes(),
+            )?;
+        }
+    }
+
+    if off_out_ptr.is_null() {
+        out_file.lseek(write_offset as isize, SEEK_SET)?;
+    } else {
+        unsafe {
+            copy_to_user_bytes(
+                token,
+                VirtAddr::from(off_out_ptr as usize),
+                &write_offset.to_ne_bytes(),
+            )?;
+        }
+    }
+
+    Ok(total_copied)
+}
+
 pub async fn sys_statfs(_path: *const u8, statfs: *mut Statfs) -> SyscallRet {
     trace!("[sys_statfs] path:{:#?} statfs:{:#?}", _path, statfs);
     current_process()

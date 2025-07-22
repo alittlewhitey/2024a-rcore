@@ -96,6 +96,7 @@ pub const SYSCALL_DUP2:usize=23;
 
 pub const SYSCALL_DUP3:usize=24;
 pub const SYSCALL_PRLIMIT64 :usize =261;
+pub const SYSCALL_COPY_FILE_RANGE: usize = 285;
 pub const SYSCALL_MOUNT:usize=40;
 pub const SYSCALL_UMOUNT2:usize=39;
 pub const SYSCALL_SYMLINKAT:usize =36;
