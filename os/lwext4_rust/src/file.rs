@@ -262,9 +262,7 @@ impl Ext4File {
             let aligned_size = aligned_down(size) + PAGE_SIZE;
             cache_writer.data = Vec::with_capacity(aligned_size);
             let data = &mut cache_writer.data;
-            unsafe {
-                data.set_len(aligned_size);
-            }
+            data.resize(aligned_size, 0);
             cache_writer.size = size;
             if size == 0 {
                 insert_cache(file_path.clone(), &cache);
@@ -292,7 +290,7 @@ impl Ext4File {
 
             let cache = get_cache(path.clone());
             let mut cache_writer = cache.write();
-
+            // cache_writer.debug_println();
             let offset = offset as usize;
             if offset > cache_writer.size {
                 /*
@@ -306,6 +304,8 @@ impl Ext4File {
             }
 
             cache_writer.offset = offset as usize;
+
+            // cache_writer.debug_println();
             //debug!("offset change to {:x}", offset);
             return Ok(EOK as usize);
         }
@@ -838,6 +838,22 @@ pub struct VFileCache {
 }
 
 impl VFileCache {
+    pub fn debug_println(&self) {
+        if self.data.len() < 10 {
+            warn!(
+                "self predata len:{}, data:{:?}",
+                self.data.len(),
+                &self.data[..]
+            );
+        } else {
+            warn!(
+                "self predata len:{}, data:{:?}",
+                self.data.len(),
+                &self.data[..10]
+            );
+        }
+        warn!("self off:{}", self.offset);
+    }
     pub fn new() -> Self {
         Self {
             data: Vec::new(),
@@ -852,6 +868,8 @@ impl VFileCache {
     }
 
     pub fn writebuf(&mut self, buf: &[u8]) -> usize {
+        // self.debug_println();
+        // warn!("self off:{}", self.offset);
         let length = buf.len();
         if self.offset + length > self.size {
             self.size = self.offset + length;
@@ -868,6 +886,7 @@ impl VFileCache {
             self.data[self.offset..self.offset + length].copy_from_slice(buf);
         }
         self.modified = true;
+        // self.debug_println();
         /*
         debug!(
             "write {} bytes and size is {}, data.len() is {} now",

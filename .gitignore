@@ -25,3 +25,5 @@ os/build
 user/
 ci-user/
 .DS_Store
+os/lwext4_rust/c/lwext4/liblwext4-riscv64.a
+os/lwext4_rust/c/lwext4/liblwext4-loongarch64.a
