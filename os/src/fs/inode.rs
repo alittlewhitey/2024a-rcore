@@ -1,19 +1,18 @@
 use alloc::boxed::Box;
 use alloc::string::String;
 /// src/fs/os_inode.rs
-
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use async_trait::async_trait;
 use bitflags::bitflags;
-use lwext4_rust::bindings::{ SEEK_CUR, SEEK_END, SEEK_SET};
+use lwext4_rust::bindings::{SEEK_CUR, SEEK_END, SEEK_SET};
 use spin::Mutex;
 
 use super::vfs::vfs_ops::VfsNodeOps;
 use super::File;
 use crate::fs::PollEvents;
 use crate::mm::UserBuffer;
-use crate::utils::error::{ GeneralRet, SysErrNo, SyscallRet, TemplateRet};
+use crate::utils::error::{GeneralRet, SysErrNo, SyscallRet, TemplateRet};
 pub const DEFAULT_FILE_MODE: u32 = 0o666;
 pub const DEFAULT_DIR_MODE: u32 = 0o777;
 pub const NONE_MODE: u32 = 0;
@@ -44,12 +43,10 @@ bitflags! {
         const O_PATH        = 0o10000000;
         const O_TMPFILE     = 0o20200000;
 
-       
-        const O_ASK_SYMLINK = 0x80000000; 
+
+        const O_ASK_SYMLINK = 0x80000000;
     }
 }
-
-
 
 /// 在 OS 里再包装一层 Inode 以实现 File trait
 pub struct OsInode {
@@ -64,12 +61,11 @@ pub struct OSInodeInner {
 }
 
 impl OsInode {
-  
     pub fn new(readable: bool, writable: bool, inode: Arc<dyn VfsNodeOps>) -> Self {
         OsInode {
             readable,
             writable,
-            inner:  Mutex::new(OSInodeInner { offset: 0, inode }) ,
+            inner: Mutex::new(OSInodeInner { offset: 0, inode }),
         }
     }
 
@@ -78,31 +74,33 @@ impl OsInode {
         let mut buf = [0u8; 512];
         let mut out = Vec::new();
         loop {
-            let n =inner.inode.read_at(inner.offset as u64, &mut buf).unwrap();
-            if n == 0 { break; }
+            let n = inner.inode.read_at(inner.offset as u64, &mut buf).unwrap();
+            if n == 0 {
+                break;
+            }
             inner.offset += n;
             out.extend_from_slice(&buf[..n]);
         }
         out
     }
-    pub fn get_path(&self)->String{
+    pub fn get_path(&self) -> String {
         let inner = self.inner.lock();
-       inner.inode.path()
+        inner.inode.path()
     }
-    pub fn is_dir(&self)->bool{
-        let inner =self.inner.lock();
+    pub fn is_dir(&self) -> bool {
+        let inner = self.inner.lock();
         inner.inode.is_dir()
     }
-    pub fn read_at(&self,offset:usize, buf:&mut [u8])->SyscallRet{
-        let mut inner = self.inner.lock();
+    pub fn read_at(&self, offset: usize, buf: &mut [u8]) -> SyscallRet {
+        let inner = self.inner.lock();
         let n = inner.inode.read_at(offset as u64, buf)?;
-        inner.offset += n;
+
         Ok(n)
     }
-    pub fn write_at(&self,offset:usize, buf:&[u8])->SyscallRet{
-        let mut inner = self.inner.lock();
+    pub fn write_at(&self, offset: usize, buf: &[u8]) -> SyscallRet {
+        let inner = self.inner.lock();
         let n = inner.inode.write_at(offset as u64, buf)?;
-        inner.offset += n;
+
         Ok(n)
     }
     pub fn read_dentry(&self, off: usize, len: usize) -> Result<(Vec<u8>, isize), SysErrNo> {
@@ -112,12 +110,23 @@ impl OsInode {
     pub fn offset(&self) -> usize {
         self.inner.lock().offset
     }
-    pub fn set_timestamps(&self,atime:Option<u32>,mtime:Option<u32>,ctime:Option<u32>)->SyscallRet{
+    pub fn set_timestamps(
+        &self,
+        atime: Option<u32>,
+        mtime: Option<u32>,
+        ctime: Option<u32>,
+    ) -> SyscallRet {
         self.inner.lock().inode.set_timestamps(atime, mtime, ctime)
-         
     }
     pub fn truncate(&self, size: u64) -> SyscallRet {
-        self.inner.lock().inode.truncate(size).map_err(|err| SysErrNo::from(-err))
+        self.inner
+            .lock()
+            .inode
+            .truncate(size)
+            .map_err(|err| SysErrNo::from(-err))
+    }
+    pub fn size(&self) -> usize {
+        self.inner.lock().inode.size()
     }
 }
 
@@ -193,12 +202,11 @@ impl InodeType {
 #[async_trait]
 /// 为 `crate::traits::File` 实现 read/write/clear
 impl File for OsInode {
-    fn poll(&self, events: PollEvents, waker_to_register: &core::task::Waker) -> PollEvents{
+    fn poll(&self, events: PollEvents, waker_to_register: &core::task::Waker) -> PollEvents {
         let mut revents = PollEvents::empty();
 
         // 检查可读性 (POLLIN)
         if events.contains(PollEvents::POLLIN) {
-          
             if self.readable {
                 revents |= PollEvents::POLLIN;
             }
@@ -206,13 +214,10 @@ impl File for OsInode {
 
         // 检查可写性 (POLLOUT)
         if events.contains(PollEvents::POLLOUT) {
- 
             if self.writable {
                 revents |= PollEvents::POLLOUT;
             }
         }
-
-    
 
         revents
     }
@@ -221,46 +226,40 @@ impl File for OsInode {
     }
     fn clear(&self) {
         let _ = self.inner.lock().inode.truncate(0);
-        
     }
-   fn readable(&self) -> TemplateRet<bool> {
-        Ok(self.readable)  
+    fn readable(&self) -> TemplateRet<bool> {
+        Ok(self.readable)
     }
 
-   fn writable(&self) -> TemplateRet<bool> {
-       Ok(self.writable) 
+    fn writable(&self) -> TemplateRet<bool> {
+        Ok(self.writable)
     }
-    async fn read<'a>( 
-        & self,                
-        mut buf: UserBuffer<'a>  
-    ) -> Result<usize, SysErrNo> {
-       
-            let mut inner = self.inner.lock();
-                let mut total = 0;
-            for slice in buf.buffers.iter_mut() {
-                let n = inner.inode.read_at(inner.offset as u64, slice)?;
-                if n == 0 { break; }
-                inner.offset += n;
-                total += n;
+    async fn read<'a>(&self, mut buf: UserBuffer<'a>) -> Result<usize, SysErrNo> {
+        let mut inner = self.inner.lock();
+        let mut total = 0;
+        for slice in buf.buffers.iter_mut() {
+            let n = inner.inode.read_at(inner.offset as u64, slice)?;
+            if n == 0 {
+                break;
             }
-            trace!("[read] off:{}",inner.offset);
-            Ok(total)
-        
+            inner.offset += n;
+            total += n;
+        }
+        trace!("[read] off:{}", inner.offset);
+        Ok(total)
     }
 
     async fn write<'buf>(&self, buf: UserBuffer<'buf>) -> Result<usize, SysErrNo> {
-      
-            let mut inner = self.inner.lock();
-            let mut total = 0;
-            for slice in buf.buffers.iter() {
-                let n = inner.inode.write_at(inner.offset as u64, *slice)?;
-                inner.offset += n;
-                total += n;
-            }
-            
-            trace!("[write] off:{}",inner.offset);
-            Ok(total)
-      
+        let mut inner = self.inner.lock();
+        let mut total = 0;
+        for slice in buf.buffers.iter() {
+            let n = inner.inode.write_at(inner.offset as u64, *slice)?;
+            inner.offset += n;
+            total += n;
+        }
+
+        trace!("[write] off:{}", inner.offset);
+        Ok(total)
     }
     fn lseek(&self, offset: isize, whence: u32) -> crate::utils::error::SyscallRet {
         if whence > 2 {
@@ -268,24 +267,22 @@ impl File for OsInode {
         }
         let mut inner = self.inner.lock();
         if whence == SEEK_SET {
-            if offset<0 {
-                
-                warn!("[OsInode::lseek]err:SEEK_SET off < 0,off = {}",offset);
+            if offset < 0 {
+                warn!("[OsInode::lseek]err:SEEK_SET off < 0,off = {}", offset);
                 return Err(SysErrNo::EINVAL);
             }
             inner.offset = offset as usize;
         } else if whence == SEEK_CUR {
             let newoff = inner.offset as isize + offset;
             if newoff < 0 {
-                warn!("[OsInode::lseek]err:SEEK_CUR off < 0,off = {}",newoff);
+                warn!("[OsInode::lseek]err:SEEK_CUR off < 0,off = {}", newoff);
                 return Err(SysErrNo::EINVAL);
             }
             inner.offset = newoff as usize;
         } else if whence == SEEK_END {
             let newoff = inner.inode.size() as isize + offset;
             if newoff < 0 {
-                
-                warn!("[OsInode::lseek]err:SEEK_END off < 0,off = {}",newoff);
+                warn!("[OsInode::lseek]err:SEEK_END off < 0,off = {}", newoff);
                 return Err(SysErrNo::EINVAL);
             }
             inner.offset = newoff as usize;
@@ -293,12 +290,11 @@ impl File for OsInode {
         Ok(inner.offset)
     }
 
-     fn fstat(&self) -> super::stat::Kstat {
+    fn fstat(&self) -> super::stat::Kstat {
         self.inner.lock().inode.fstat()
     }
 
-    fn get_path(&self)->String{
+    fn get_path(&self) -> String {
         self.get_path()
     }
-    }
-
+}

@@ -392,6 +392,10 @@ pub async fn sys_lseek(fd: usize, offset: isize, whence: u32) -> SyscallRet {
         offset,
         whence
     );
+    // println!(
+    //     "sys_lseek(fd: {}, offset: {}, whence: {})",
+    //     fd, offset, whence
+    // );
     let pcb_arc = current_process(); // 假设 current_process 是 async
     let fd_table_guard = pcb_arc.fd_table.lock().await;
 
@@ -421,6 +425,7 @@ pub async fn sys_pread64(
         count,
         offset
     );
+
     if count == 0 {
         return Ok(0);
     }
@@ -461,14 +466,14 @@ pub async fn sys_pread64(
         // EOF
         return Ok(0);
     }
-
-    Ok(unsafe {
+    let res = unsafe {
         copy_to_user_bytes(
             token,
             VirtAddr::from(user_buf_ptr as usize),
             &kernel_buffer[0..bytes_read],
         )
-    }?)
+    }?;
+    Ok(res)
 }
 
 pub async fn sys_pwrite64(
@@ -2995,6 +3000,12 @@ pub async fn sys_splice(
                 // 读失败或未读满，中断
                 break;
             }
+            if off_in.is_null() {
+                file.lseek(
+                    *current_offset_in as isize + bytes_moved_count as isize,
+                    SEEK_SET,
+                )?;
+            }
 
             // c. 向管道写入一字节
             let mut guard = pipe.buffer.lock();
@@ -3045,6 +3056,12 @@ pub async fn sys_splice(
                     *current_offset_out + bytes_moved_count as i64
                 );
                 break;
+            }
+            if off_out.is_null() {
+                file.lseek(
+                    *current_offset_out as isize + bytes_moved_count as isize,
+                    SEEK_SET,
+                )?;
             }
 
             bytes_moved_count += 1;
