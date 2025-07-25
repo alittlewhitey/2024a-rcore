@@ -1,5 +1,7 @@
 //! File and filesystem-related syscalls
 
+use core::ptr::null;
+
 use crate::fs::dev::open_device_file;
 use crate::fs::mount::MNT_TABLE;
 use crate::fs::pipe::{make_pipe, Pipe};
@@ -3057,121 +3059,70 @@ pub async fn sys_splice(
 
     Ok(bytes_moved)
 }
-
-pub async fn sys_copy_file_range(
-    fd_in: i32,
-    off_in_ptr: *mut i64,
-    fd_out: i32,
-    off_out_ptr: *mut i64,
-    len: usize,
-    _flags: u32,
-) -> SyscallRet {
-    log::trace!(
-        "[sys_copy_file_range] fd_in: {}, off_in: {:?}, fd_out: {}, off_out: {:?}, len: {}",
-        fd_in,
-        off_in_ptr,
-        fd_out,
-        off_out_ptr,
-        len
+pub async fn sys_fchmodat(dirfd: i32, path_ptr: *const u8, mode: u32, flags: u32) -> SyscallRet {
+    const AT_SYMLINK_NOFOLLOW: u32 = 0x100;
+    trace!(
+        "[sys_fchmodat] dirfd: {}, path_ptr: {:p}, mode: {:#o}, flags: {:#x}",
+        dirfd,
+        path_ptr,
+        mode,
+        flags
     );
-
     let proc = current_process();
-    let token = proc.memory_set.lock().await.token();
-
-    let in_file = proc.get_file(fd_in as usize).await?;
-    let out_file = proc.get_file(fd_out as usize).await?;
-
-    if !in_file.readable()? {
-        return Err(SysErrNo::EBADF);
+    let token = proc.get_user_token().await;
+    let path = translated_str(token, path_ptr);
+    if path.is_empty() {
+        return Err(SysErrNo::ENOENT);
     }
-    if !out_file.writable()? {
-        return Err(SysErrNo::EBADF);
-    }
-
-    let mut read_offset = if off_in_ptr.is_null() {
-        in_file.lseek(0, SEEK_CUR)? as i64
+    let follow_symlink = (flags & AT_SYMLINK_NOFOLLOW) == 0;
+    let abs_path = proc
+        .resolve_path_from_fd(dirfd, &path, follow_symlink)
+        .await?;
+    let open_flags = if follow_symlink {
+        OpenFlags::O_RDONLY
     } else {
-        proc.manual_alloc_type_for_lazy(off_in_ptr).await?;
-        unsafe { copy_from_user_exact(token, off_in_ptr)? }
+        OpenFlags::O_RDONLY | OpenFlags::O_ASK_SYMLINK
     };
 
-    let mut write_offset = if off_out_ptr.is_null() {
-        out_file.lseek(0, SEEK_CUR)? as i64
+    let file = open_file(&abs_path, open_flags, 0)?;
+    let os_file = file.file()?;
+    let mut inner = os_file.inner.lock();
+    let current_mode = inner.inode.fmode()?;
+    let new_mode = (current_mode & 0o170000) | (mode & 0o7777);
+    inner.inode.fmode_set(new_mode)?;
+
+    Ok(0)
+}
+pub async fn sys_fchownat(dirfd: i32, path_ptr: *const u8, owner: u32, group: u32, flags: u32) -> SyscallRet {
+    const AT_SYMLINK_NOFOLLOW: u32 = 0x100;
+    const AT_EMPTY_PATH: u32 = 0x1000;
+    trace!(
+        "[sys_fchownat] dirfd: {}, path: {:p}, owner: {}, group: {}, flags: {:#x}",
+        dirfd, path_ptr, owner, group, flags
+    );
+    let proc = current_process();
+    let token = proc.get_user_token().await;
+    let path = translated_str(token, path_ptr);
+    if (flags & AT_EMPTY_PATH) != 0 && path.is_empty() {
+        let file = proc.get_file(dirfd as usize).await?;
+        let os_file = file.file()?;
+        return os_file.inner.lock().inode.set_owner(owner, group);
+    }
+
+    if path.is_empty() {
+        return Err(SysErrNo::ENOENT);
+    }
+    let follow_symlink = (flags & AT_SYMLINK_NOFOLLOW) == 0;
+    let abs_path = proc
+        .resolve_path_from_fd(dirfd, &path, follow_symlink)
+        .await?;
+    let open_flags = if follow_symlink {
+        OpenFlags::O_RDONLY
     } else {
-        proc.manual_alloc_type_for_lazy(off_out_ptr).await?;
-        unsafe { copy_from_user_exact(token, off_out_ptr)? }
+        OpenFlags::O_RDONLY | OpenFlags::O_ASK_SYMLINK
     };
 
-    if read_offset < 0 || write_offset < 0 {
-        return Err(SysErrNo::EINVAL);
-    }
-
-    if read_offset as usize >= in_file.fstat().st_size as usize {
-        return Ok(0);
-    }
-
-    let mut buffer = [0u8; 4096];
-    let mut total_copied = 0;
-
-    while total_copied < len {
-        let to_copy = (len - total_copied).min(buffer.len());
-
-        let bytes_read = {
-            in_file.lseek(read_offset as isize, SEEK_SET)?;
-            let read_buf_slice = &mut buffer[..to_copy];
-            let static_read_slice = unsafe {
-                core::slice::from_raw_parts_mut(read_buf_slice.as_mut_ptr(), read_buf_slice.len())
-            };
-            let user_buf = UserBuffer::new(vec![static_read_slice]);
-            in_file.read(user_buf).await?
-        };
-
-        if bytes_read == 0 {
-            break;
-        }
-
-        let bytes_written = {
-            out_file.lseek(write_offset as isize, SEEK_SET)?;
-            let write_buf_slice = &mut buffer[..bytes_read];
-            let static_write_slice = unsafe {
-                core::slice::from_raw_parts_mut(write_buf_slice.as_mut_ptr(), write_buf_slice.len())
-            };
-            let user_buf = UserBuffer::new(vec![static_write_slice]);
-            out_file.write(user_buf).await?
-        };
-
-        read_offset += bytes_written as i64;
-        write_offset += bytes_written as i64;
-        total_copied += bytes_written;
-
-        if bytes_written < bytes_read {
-            break;
-        }
-    }
-
-    if off_in_ptr.is_null() {
-        in_file.lseek(read_offset as isize, SEEK_SET)?;
-    } else {
-        unsafe {
-            copy_to_user_bytes(
-                token,
-                VirtAddr::from(off_in_ptr as usize),
-                &read_offset.to_ne_bytes(),
-            )?;
-        }
-    }
-
-    if off_out_ptr.is_null() {
-        out_file.lseek(write_offset as isize, SEEK_SET)?;
-    } else {
-        unsafe {
-            copy_to_user_bytes(
-                token,
-                VirtAddr::from(off_out_ptr as usize),
-                &write_offset.to_ne_bytes(),
-            )?;
-        }
-    }
-
-    Ok(total_copied)
+    let file = open_file(&abs_path, open_flags, 0)?;
+    let os_file = file.file()?;
+    return os_file.inner.lock().inode.set_owner(owner, group);
 }
