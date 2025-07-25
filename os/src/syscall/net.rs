@@ -9,7 +9,7 @@ use log::debug;
 
 pub async  fn sys_socket(_domain: u32, _type: u32, _protocol: u32) -> SyscallRet {
     let proc = current_process();
-    let new_fd =proc.alloc_fd().await?;
+    // let new_fd =proc.alloc_fd().await?;
     let close_on_exec = (_type & 0o2000000) == 0o2000000;
     let non_block = (_type & 0o4000) == 0o4000;
     let mut flags = OpenFlags::empty();
@@ -20,11 +20,13 @@ pub async  fn sys_socket(_domain: u32, _type: u32, _protocol: u32) -> SyscallRet
         flags |= OpenFlags::O_NONBLOCK;
     }
     
-    proc.fd_table.lock().await.add_fd(
+    let mut fd_table = proc.fd_table.lock().await;
+    let new_fd = fd_table.alloc_fd()?;
+    fd_table.add_fd(
         FileDescriptor::new(flags, FileClass::Abs(make_socket())),
-
         new_fd,
     )?;
+    drop(fd_table);
     
     Ok(new_fd)
 }
@@ -156,16 +158,15 @@ pub async  fn sys_socketpair(domain: u32, stype: u32, protocol: u32, sv: *mut u3
         flags |= OpenFlags::O_NONBLOCK;
     }
     proc.manual_alloc_type_for_lazy(sv).await?;
-    let new_fd1 = proc.fd_table.lock().await.alloc_fd()?;
-    proc
-        .fd_table.lock()
-        .await.add_fd(FileDescriptor::new(flags, FileClass::Abs(socket1)),new_fd1, )?;
-        let new_fd2 = proc.fd_table.lock().await.alloc_fd()?;
-    proc
-        .fd_table.lock()
-
-        .await.add_fd( FileDescriptor::new(flags, FileClass::Abs(socket2)),new_fd2)?;
- 
+    
+    let mut fd_table = proc.fd_table.lock().await;
+    let new_fd1 = fd_table.alloc_fd()?;
+    fd_table.add_fd(FileDescriptor::new(flags, FileClass::Abs(socket1)), new_fd1)?;
+    
+    let new_fd2 = fd_table.alloc_fd()?;
+    fd_table.add_fd(FileDescriptor::new(flags, FileClass::Abs(socket2)), new_fd2)?;
+    
+    drop(fd_table);
 
     *translated_refmut(token, sv)? = new_fd1 as u32;
     *translated_refmut(token, unsafe { sv.add(1) })? = new_fd2 as u32;
