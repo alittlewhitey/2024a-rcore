@@ -3059,6 +3059,158 @@ pub async fn sys_splice(
 
     Ok(bytes_moved)
 }
+/// 复制文件数据范围
+///
+/// # 参数
+/// * `fd_in` - 输入文件的文件描述符
+/// * `off_in_ptr` - 指向输入文件偏移量的指针，若为 null 则使用并更新文件自身的偏移量
+/// * `fd_out` - 输出文件的文件描述符
+/// * `off_out_ptr` - 指向输出文件偏移量的指针，若为 null 则使用并更新文件自身的偏移量
+/// * `len` - 要复制的字节数
+/// * `_flags` - 标志位 (当前未使用，为将来扩展保留)
+///
+/// # 返回
+/// 成功时返回已复制的字节数 (Ok(usize))，失败时返回错误码 (Err(SysErrNo))
+pub async fn sys_copy_file_range(
+    fd_in: i32,
+    off_in_ptr: *mut i64,
+    fd_out: i32,
+    off_out_ptr: *mut i64,
+    len: usize,
+    _flags: u32,
+) -> SyscallRet {
+    info!(
+        "[sys_copy_file_range] fd_in: {}, off_in_ptr: {:?}, fd_out: {}, off_out_ptr: {:?}, len: {}",
+        fd_in, off_in_ptr, fd_out, off_out_ptr, len
+    );
+
+    if len == 0 {
+        return Ok(0);
+    }
+
+    let proc = current_process();
+    let token = proc.memory_set.lock().await.token();
+
+    // 1. 获取文件对象并检查权限
+    let in_file = proc.get_file(fd_in as usize).await?;
+    let out_file = proc.get_file(fd_out as usize).await?;
+
+    if !in_file.readable()? {
+        return Err(SysErrNo::EBADF);
+    }
+    if !out_file.writable()? {
+        return Err(SysErrNo::EBADF);
+    }
+
+    // 假设可以从 File trait 对象获取底层的 VFS inode 来查询文件大小
+    let vfs_in_file = in_file.file()?;
+    let vfs_out_file = out_file.file()?;
+
+    // 2. 获取初始偏移量
+    let mut read_offset = if off_in_ptr.is_null() {
+        in_file.lseek(0, SEEK_CUR)? as i64
+    } else {
+        proc.manual_alloc_type_for_lazy(off_in_ptr).await?;
+        unsafe { copy_from_user_exact(token, off_in_ptr)? }
+    };
+
+    let mut write_offset = if off_out_ptr.is_null() {
+        out_file.lseek(0, SEEK_CUR)? as i64
+    } else {
+        proc.manual_alloc_type_for_lazy(off_out_ptr).await?;
+        unsafe { copy_from_user_exact(token, off_out_ptr)? }
+    };
+    // println!(
+    //     "[sys_copy_file_range] fd_in: {}, read_off : {}, fd_out: {}, write_off: {}, len: {}",
+    //     fd_in, read_offset, fd_out, write_offset, len
+    // );
+    if read_offset < 0 || write_offset < 0 {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    let in_file_size = vfs_in_file.size() as i64;
+
+    // 如果起始读取位置已经超过或等于文件大小，直接返回 0
+    if read_offset >= in_file_size {
+        return Ok(0);
+    }
+
+    // 本次调用能拷贝的最大字节数，不能超过从 read_offset 到文件末尾的长度
+    let max_len_from_src = (in_file_size - read_offset) as usize;
+    let effective_len = core::cmp::min(len, max_len_from_src);
+
+    if effective_len == 0 {
+        return Ok(0);
+    }
+
+    // 4. 循环读写数据
+    let mut buffer = [0u8; 4096];
+    let mut total_copied = 0;
+
+    while total_copied < effective_len {
+        let to_copy = core::cmp::min(effective_len - total_copied, buffer.len());
+        let read_slice = &mut buffer[..to_copy];
+
+        // 使用 read_at 从输入文件读取
+        let bytes_read = match vfs_in_file.read_at(read_offset as usize, read_slice) {
+            Ok(n) => n,
+            Err(e) => return Err(e),
+        };
+
+        if bytes_read == 0 {
+            break;
+        }
+        // {
+        //     let mut buffer = [0u8; 10];
+        //     let _ = vfs_out_file.read_at(0, &mut buffer);
+        //     println!(
+        //         "[sys_copy_file_range_final_pre] fd_in: {}, read_off : {}, fd_out: {}, write_off: {}, len: {}, buffer: {:?}",
+        //         fd_in, read_offset, fd_out, write_offset, len, buffer
+        //     );
+        // }
+        // 使用 write_at 将数据写入输出文件
+        let write_slice = &buffer[..bytes_read];
+        let bytes_written = match vfs_out_file.write_at(write_offset as usize, write_slice) {
+            Ok(n) => n,
+            Err(e) => return Err(e),
+        };
+
+        // 更新偏移量和已拷贝的总字节数
+        read_offset += bytes_written as i64;
+        write_offset += bytes_written as i64;
+        total_copied += bytes_written;
+
+        // 如果写入的字节数少于读取的（例如磁盘空间不足），或者写入了0字节，则停止
+        if bytes_written < bytes_read || bytes_written == 0 {
+            break;
+        }
+    }
+
+    // 5. 写回最终更新后的偏移量
+    // 只有在实际拷贝了数据的情况下才更新偏移量
+    if total_copied > 0 {
+        if off_in_ptr.is_null() {
+            in_file.lseek(read_offset as isize, SEEK_SET)?;
+        } else {
+            put_data(token, off_in_ptr as *mut usize, read_offset as usize)?;
+        }
+
+        if off_out_ptr.is_null() {
+            out_file.lseek(write_offset as isize, SEEK_SET)?;
+        } else {
+            put_data(token, off_out_ptr as *mut usize, write_offset as usize)?;
+        }
+    }
+    // {
+    //     let mut buffer = [0u8; 10];
+    //     let _ = vfs_out_file.read_at(0, &mut buffer);
+    //     println!(
+    //         "[sys_copy_file_range_final] fd_in: {}, read_off : {}, fd_out: {}, write_off: {}, len: {}, buffer: {:?}",
+    //         fd_in, read_offset, fd_out, write_offset, len, buffer
+    //     );
+    // }
+    Ok(total_copied)
+}
 pub async fn sys_fchmodat(dirfd: i32, path_ptr: *const u8, mode: u32, flags: u32) -> SyscallRet {
     const AT_SYMLINK_NOFOLLOW: u32 = 0x100;
     trace!(
